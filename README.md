@@ -30,9 +30,13 @@ golang版本的DataX，完全兼容DataX配置文件格式的数据同步工具�
 
 ### Reader插件
 - [x] PostgresqlReader: 从PostgreSQL数据库读取数据
+- [x] MysqlReader: 从MySQL数据库读取数据
+- [x] SqliteReader: 从SQLite数据库读取数据
 
 ### Writer插件
 - [x] PostgresqlWriter: 向PostgreSQL数据库写入数据
+- [x] MysqlWriter: 向MySQL数据库写入数据
+- [x] SqliteWriter: 向SQLite数据库写入数据
 
 ## 配置文件格式
 
@@ -83,5 +87,67 @@ go run cmd/datax/main.go -job config.json
 ## 技术栈
 
 - Go 1.22+
-- GORM (PostgreSQL连接池管理)
-- pq (PostgreSQL驱动)
+- GORM (数据库ORM框架)
+- PostgreSQL驱动: github.com/jackc/pgx/v5
+- MySQL驱动: github.com/go-sql-driver/mysql
+- SQLite驱动: github.com/mattn/go-sqlite3
+
+## 数据库配置示例
+
+### PostgreSQL配置
+```json
+{
+  "reader": {
+    "name": "postgresqlreader",
+    "parameter": {
+      "username": "postgres",
+      "password": "postgres",
+      "connection": [
+        {
+          "jdbcUrl": ["jdbc:postgresql://localhost:5432/source_db"],
+          "table": ["table_name"]
+        }
+      ],
+      "column": ["*"]
+    }
+  }
+}
+```
+
+### MySQL配置
+```json
+{
+  "reader": {
+    "name": "mysqlreader",
+    "parameter": {
+      "username": "root",
+      "password": "password",
+      "connection": [
+        {
+          "jdbcUrl": ["jdbc:mysql://localhost:3306/source_db?charset=utf8"],
+          "table": ["table_name"]
+        }
+      ],
+      "column": ["*"]
+    }
+  }
+}
+```
+
+### SQLite配置
+```json
+{
+  "reader": {
+    "name": "sqlitereader",
+    "parameter": {
+      "connection": [
+        {
+          "jdbcUrl": ["jdbc:sqlite:/path/to/database.db"],
+          "table": ["table_name"]
+        }
+      ],
+      "column": ["*"]
+    }
+  }
+}
+```
