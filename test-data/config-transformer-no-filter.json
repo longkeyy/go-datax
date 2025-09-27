@@ -1,0 +1,72 @@
+{
+  "job": {
+    "setting": {
+      "speed": {
+        "channel": 1
+      },
+      "errorLimit": {
+        "record": 5,
+        "percentage": 10
+      }
+    },
+    "content": [
+      {
+        "reader": {
+          "name": "postgresqlreader",
+          "parameter": {
+            "username": "postgres",
+            "password": "postgres",
+            "column": ["id", "name", "age", "email", "created_at"],
+            "connection": [
+              {
+                "jdbcUrl": ["jdbc:postgresql://localhost:5432/llm_datasets"],
+                "table": ["users"]
+              }
+            ]
+          }
+        },
+        "writer": {
+          "name": "postgresqlwriter",
+          "parameter": {
+            "username": "postgres",
+            "password": "postgres",
+            "column": ["id", "name", "age", "email", "created_at"],
+            "connection": [
+              {
+                "jdbcUrl": "jdbc:postgresql://localhost:5432/datax",
+                "table": ["users_transformed_final"]
+              }
+            ],
+            "preSql": [
+              "DROP TABLE IF EXISTS users_transformed_final",
+              "CREATE TABLE users_transformed_final (id SERIAL PRIMARY KEY, name VARCHAR(255), age INTEGER, email VARCHAR(255), created_at TIMESTAMP)"
+            ]
+          }
+        },
+        "transformer": [
+          {
+            "name": "dx_substr",
+            "parameter": {
+              "columnIndex": 1,
+              "paras": ["0", "6"]
+            }
+          },
+          {
+            "name": "dx_replace",
+            "parameter": {
+              "columnIndex": 3,
+              "paras": ["@", "_AT_"]
+            }
+          },
+          {
+            "name": "dx_pad",
+            "parameter": {
+              "columnIndex": 1,
+              "paras": ["right", "15", "*"]
+            }
+          }
+        ]
+      }
+    ]
+  }
+}

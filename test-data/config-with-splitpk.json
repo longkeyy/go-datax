@@ -1,0 +1,46 @@
+{
+  "job": {
+    "setting": {
+      "speed": {
+        "channel": 3
+      }
+    },
+    "content": [
+      {
+        "reader": {
+          "name": "postgresqlreader",
+          "parameter": {
+            "username": "postgres",
+            "password": "postgres",
+            "column": ["id", "name", "age", "email", "created_at"],
+            "splitPk": "id",
+            "connection": [
+              {
+                "jdbcUrl": ["jdbc:postgresql://localhost:5432/llm_datasets"],
+                "table": ["users"]
+              }
+            ]
+          }
+        },
+        "writer": {
+          "name": "postgresqlwriter",
+          "parameter": {
+            "username": "postgres",
+            "password": "postgres",
+            "column": ["id", "name", "age", "email", "created_at"],
+            "connection": [
+              {
+                "jdbcUrl": "jdbc:postgresql://localhost:5432/datax",
+                "table": ["users_split"]
+              }
+            ],
+            "preSql": [
+              "DROP TABLE IF EXISTS users_split",
+              "CREATE TABLE users_split (id SERIAL PRIMARY KEY, name VARCHAR(255), age INTEGER, email VARCHAR(255), created_at TIMESTAMP)"
+            ]
+          }
+        }
+      }
+    ]
+  }
+}

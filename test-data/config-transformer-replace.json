@@ -1,0 +1,54 @@
+{
+  "job": {
+    "setting": {
+      "speed": {
+        "channel": 1
+      }
+    },
+    "content": [
+      {
+        "reader": {
+          "name": "postgresqlreader",
+          "parameter": {
+            "username": "postgres",
+            "password": "postgres",
+            "column": ["id", "messages"],
+            "connection": [
+              {
+                "jdbcUrl": ["jdbc:postgresql://localhost:5432/llm_datasets"],
+                "table": ["users"]
+              }
+            ]
+          }
+        },
+        "transformer": [
+          {
+            "name": "dx_replace",
+            "parameter": {
+              "columnIndex": 1,
+              "paras": ["test_user", "USER"]
+            }
+          }
+        ],
+        "writer": {
+          "name": "postgresqlwriter",
+          "parameter": {
+            "username": "postgres",
+            "password": "postgres",
+            "column": ["id", "name_replaced"],
+            "connection": [
+              {
+                "jdbcUrl": "jdbc:postgresql://localhost:5432/datax",
+                "table": ["transformer_replace_test"]
+              }
+            ],
+            "preSql": [
+              "DROP TABLE IF EXISTS transformer_replace_test",
+              "CREATE TABLE transformer_replace_test (id SERIAL PRIMARY KEY, name_replaced VARCHAR(255))"
+            ]
+          }
+        }
+      }
+    ]
+  }
+}

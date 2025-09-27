@@ -1,0 +1,54 @@
+{
+  "job": {
+    "setting": {
+      "speed": {
+        "channel": 1
+      }
+    },
+    "content": [
+      {
+        "reader": {
+          "name": "postgresqlreader",
+          "parameter": {
+            "username": "postgres",
+            "password": "postgres",
+            "column": ["id", "messages"],
+            "connection": [
+              {
+                "jdbcUrl": ["jdbc:postgresql://localhost:5432/llm_datasets"],
+                "table": ["malaysia_ai"]
+              }
+            ]
+          }
+        },
+        "transformer": [
+          {
+            "name": "dx_filter",
+            "parameter": {
+              "columnIndex": 0,
+              "paras": ["like", "93418fd.*"]
+            }
+          }
+        ],
+        "writer": {
+          "name": "postgresqlwriter",
+          "parameter": {
+            "username": "postgres",
+            "password": "postgres",
+            "column": ["id", "messages"],
+            "connection": [
+              {
+                "jdbcUrl": "jdbc:postgresql://localhost:5432/datax",
+                "table": ["transformer_filter_test"]
+              }
+            ],
+            "preSql": [
+              "DROP TABLE IF EXISTS transformer_filter_test",
+              "CREATE TABLE transformer_filter_test (id VARCHAR(32) PRIMARY KEY, messages JSONB)"
+            ]
+          }
+        }
+      }
+    ]
+  }
+}
