@@ -1,4 +1,4 @@
-package mysqlreader
+package sqlserverreader
 
 import (
 	"database/sql"
@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"gorm.io/driver/mysql"
+	"gorm.io/driver/sqlserver"
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
 )
@@ -19,24 +19,27 @@ const (
 	DefaultFetchSize = 1024
 )
 
-// MySQLReaderJob MySQL读取作业
-type MySQLReaderJob struct {
-	config   *config.Configuration
-	username string
-	password string
-	jdbcUrls []string
-	tables   []string
-	columns  []string
-	where    string
-	splitPk  string
-	querySql string // 支持自定义查询SQL
+// SQLServerReaderJob SQL Server读取作业
+type SQLServerReaderJob struct {
+	config    *config.Configuration
+	username  string
+	password  string
+	jdbcUrls  []string
+	tables    []string
+	columns   []string
+	where     string
+	splitPk   string
+	querySql  string // 支持自定义查询SQL
+	fetchSize int
 }
 
-func NewMySQLReaderJob() *MySQLReaderJob {
-	return &MySQLReaderJob{}
+func NewSQLServerReaderJob() *SQLServerReaderJob {
+	return &SQLServerReaderJob{
+		fetchSize: DefaultFetchSize,
+	}
 }
 
-func (job *MySQLReaderJob) Init(config *config.Configuration) error {
+func (job *SQLServerReaderJob) Init(config *config.Configuration) error {
 	job.config = config
 
 	// 获取数据库连接参数
@@ -66,10 +69,15 @@ func (job *MySQLReaderJob) Init(config *config.Configuration) error {
 	job.splitPk = config.GetString("parameter.splitPk")
 	job.querySql = config.GetString("parameter.querySql")
 
+	// 获取fetchSize
+	if fetchSize := config.GetInt("parameter.fetchSize"); fetchSize > 0 {
+		job.fetchSize = fetchSize
+	}
+
 	// 检查配置模式：querySql 或 table/column 模式
 	if job.querySql != "" {
 		// querySql模式：直接使用用户提供的SQL查询
-		log.Printf("MySQL Reader initialized with querySql mode")
+		log.Printf("SQL Server Reader initialized with querySql mode")
 	} else {
 		// table/column模式：需要table和column配置
 		job.tables = conn.GetStringList("table")
@@ -81,13 +89,13 @@ func (job *MySQLReaderJob) Init(config *config.Configuration) error {
 		if len(job.columns) == 0 {
 			return fmt.Errorf("column is required when querySql is not specified")
 		}
-		log.Printf("MySQL Reader initialized with table/column mode: tables=%v, columns=%v", job.tables, job.columns)
+		log.Printf("SQL Server Reader initialized with table/column mode: tables=%v, columns=%v", job.tables, job.columns)
 	}
 
 	return nil
 }
 
-func (job *MySQLReaderJob) Split(adviceNumber int) ([]*config.Configuration, error) {
+func (job *SQLServerReaderJob) Split(adviceNumber int) ([]*config.Configuration, error) {
 	taskConfigs := make([]*config.Configuration, 0)
 
 	// 如果使用querySql模式或没有设置splitPk，则不进行分片，使用单个任务
@@ -125,7 +133,7 @@ func (job *MySQLReaderJob) Split(adviceNumber int) ([]*config.Configuration, err
 	return taskConfigs, nil
 }
 
-func (job *MySQLReaderJob) calculateSplitRanges(adviceNumber int) ([]map[string]interface{}, error) {
+func (job *SQLServerReaderJob) calculateSplitRanges(adviceNumber int) ([]map[string]interface{}, error) {
 	// 连接数据库获取splitPk的最小值和最大值
 	db, err := job.connect()
 	if err != nil {
@@ -138,7 +146,7 @@ func (job *MySQLReaderJob) calculateSplitRanges(adviceNumber int) ([]map[string]
 	}()
 
 	table := job.tables[0]
-	query := fmt.Sprintf("SELECT MIN(`%s`), MAX(`%s`) FROM `%s`", job.splitPk, job.splitPk, table)
+	query := fmt.Sprintf("SELECT MIN([%s]), MAX([%s]) FROM [%s]", job.splitPk, job.splitPk, table)
 	if job.where != "" {
 		query += fmt.Sprintf(" WHERE %s", job.where)
 	}
@@ -177,18 +185,18 @@ func (job *MySQLReaderJob) calculateSplitRanges(adviceNumber int) ([]map[string]
 	return ranges, nil
 }
 
-func (job *MySQLReaderJob) connect() (*gorm.DB, error) {
+func (job *SQLServerReaderJob) connect() (*gorm.DB, error) {
 	// 构建连接字符串
 	jdbcUrl := job.jdbcUrls[0]
 
-	// 转换JDBC URL为MySQL连接字符串
+	// 转换JDBC URL为SQL Server连接字符串
 	dsn, err := job.convertJdbcUrl(jdbcUrl)
 	if err != nil {
 		return nil, err
 	}
 
 	// 连接数据库
-	db, err := gorm.Open(mysql.Open(dsn), &gorm.Config{
+	db, err := gorm.Open(sqlserver.Open(dsn), &gorm.Config{
 		Logger: logger.Default.LogMode(logger.Silent),
 	})
 	if err != nil {
@@ -198,72 +206,81 @@ func (job *MySQLReaderJob) connect() (*gorm.DB, error) {
 	return db, nil
 }
 
-func (job *MySQLReaderJob) convertJdbcUrl(jdbcUrl string) (string, error) {
-	// 解析JDBC URL: jdbc:mysql://host:port/database?参数
-	if !strings.HasPrefix(jdbcUrl, "jdbc:mysql://") {
-		return "", fmt.Errorf("invalid MySQL JDBC URL: %s", jdbcUrl)
+func (job *SQLServerReaderJob) convertJdbcUrl(jdbcUrl string) (string, error) {
+	// 解析JDBC URL: jdbc:sqlserver://host:port;DatabaseName=database
+	if !strings.HasPrefix(jdbcUrl, "jdbc:sqlserver://") {
+		return "", fmt.Errorf("invalid SQL Server JDBC URL: %s", jdbcUrl)
 	}
 
-	// 移除jdbc:mysql://前缀
-	url := strings.TrimPrefix(jdbcUrl, "jdbc:mysql://")
+	// 移除jdbc:sqlserver://前缀
+	url := strings.TrimPrefix(jdbcUrl, "jdbc:sqlserver://")
 
-	// 分离host:port和database以及参数
-	var hostPort, database, params string
-	parts := strings.Split(url, "/")
+	// 分离host:port和参数
+	parts := strings.Split(url, ";")
 	if len(parts) < 2 {
 		return "", fmt.Errorf("invalid JDBC URL format: %s", jdbcUrl)
 	}
 
-	hostPort = parts[0]
-	dbAndParams := strings.Join(parts[1:], "/")
+	hostPort := parts[0]
 
-	// 分离数据库名和参数
-	if idx := strings.Index(dbAndParams, "?"); idx != -1 {
-		database = dbAndParams[:idx]
-		params = dbAndParams[idx+1:]
-	} else {
-		database = dbAndParams
+	// 解析参数
+	params := make(map[string]string)
+	for i := 1; i < len(parts); i++ {
+		if strings.Contains(parts[i], "=") {
+			kv := strings.Split(parts[i], "=")
+			if len(kv) == 2 {
+				params[kv[0]] = kv[1]
+			}
+		}
 	}
 
-	// 构建MySQL DSN字符串
-	dsn := fmt.Sprintf("%s:%s@tcp(%s)/%s?parseTime=true&loc=Local",
+	// 获取数据库名
+	database, exists := params["DatabaseName"]
+	if !exists || database == "" {
+		return "", fmt.Errorf("DatabaseName is required in JDBC URL")
+	}
+
+	// 构建SQL Server DSN字符串
+	dsn := fmt.Sprintf("sqlserver://%s:%s@%s?database=%s",
 		job.username,
 		job.password,
 		hostPort,
 		database)
 
-	// 添加额外参数
-	if params != "" {
-		dsn += "&" + params
+	// 添加其他参数
+	for key, value := range params {
+		if key != "DatabaseName" {
+			dsn += fmt.Sprintf("&%s=%s", key, value)
+		}
 	}
 
 	return dsn, nil
 }
 
-func (job *MySQLReaderJob) Post() error {
+func (job *SQLServerReaderJob) Post() error {
 	return nil
 }
 
-func (job *MySQLReaderJob) Destroy() error {
+func (job *SQLServerReaderJob) Destroy() error {
 	return nil
 }
 
-// MySQLReaderTask MySQL读取任务
-type MySQLReaderTask struct {
+// SQLServerReaderTask SQL Server读取任务
+type SQLServerReaderTask struct {
 	config    *config.Configuration
-	readerJob *MySQLReaderJob
+	readerJob *SQLServerReaderJob
 	db        *gorm.DB
 }
 
-func NewMySQLReaderTask() *MySQLReaderTask {
-	return &MySQLReaderTask{}
+func NewSQLServerReaderTask() *SQLServerReaderTask {
+	return &SQLServerReaderTask{}
 }
 
-func (task *MySQLReaderTask) Init(config *config.Configuration) error {
+func (task *SQLServerReaderTask) Init(config *config.Configuration) error {
 	task.config = config
 
 	// 创建ReaderJob来重用连接逻辑
-	task.readerJob = NewMySQLReaderJob()
+	task.readerJob = NewSQLServerReaderJob()
 	err := task.readerJob.Init(config)
 	if err != nil {
 		return err
@@ -278,7 +295,7 @@ func (task *MySQLReaderTask) Init(config *config.Configuration) error {
 	return nil
 }
 
-func (task *MySQLReaderTask) StartRead(recordSender plugin.RecordSender) error {
+func (task *SQLServerReaderTask) StartRead(recordSender plugin.RecordSender) error {
 	defer func() {
 		if sqlDB, err := task.db.DB(); err == nil {
 			sqlDB.Close()
@@ -343,7 +360,7 @@ func (task *MySQLReaderTask) StartRead(recordSender plugin.RecordSender) error {
 	return nil
 }
 
-func (task *MySQLReaderTask) buildQuery() (string, error) {
+func (task *SQLServerReaderTask) buildQuery() (string, error) {
 	// 如果配置了querySql，直接使用用户提供的SQL
 	if task.readerJob.querySql != "" {
 		return task.readerJob.querySql, nil
@@ -357,15 +374,15 @@ func (task *MySQLReaderTask) buildQuery() (string, error) {
 	if len(columns) == 1 && columns[0] == "*" {
 		columnStr = "*"
 	} else {
-		// MySQL使用反引号包围列名和表名
+		// SQL Server使用方括号包围列名和表名
 		quotedColumns := make([]string, len(columns))
 		for i, col := range columns {
-			quotedColumns[i] = fmt.Sprintf("`%s`", col)
+			quotedColumns[i] = fmt.Sprintf("[%s]", col)
 		}
 		columnStr = strings.Join(quotedColumns, ", ")
 	}
 
-	query := fmt.Sprintf("SELECT %s FROM `%s`", columnStr, table)
+	query := fmt.Sprintf("SELECT %s FROM [%s]", columnStr, table)
 
 	// 添加WHERE条件
 	var whereConditions []string
@@ -380,7 +397,7 @@ func (task *MySQLReaderTask) buildQuery() (string, error) {
 		if rangeMap, ok := splitRange.(map[string]interface{}); ok {
 			start := rangeMap["start"]
 			end := rangeMap["end"]
-			condition := fmt.Sprintf("`%s` >= %v AND `%s` <= %v",
+			condition := fmt.Sprintf("[%s] >= %v AND [%s] <= %v",
 				task.readerJob.splitPk, start, task.readerJob.splitPk, end)
 			whereConditions = append(whereConditions, condition)
 		}
@@ -393,7 +410,7 @@ func (task *MySQLReaderTask) buildQuery() (string, error) {
 	return query, nil
 }
 
-func (task *MySQLReaderTask) convertToColumn(value interface{}) element.Column {
+func (task *SQLServerReaderTask) convertToColumn(value interface{}) element.Column {
 	if value == nil {
 		return element.NewStringColumn("")
 	}
@@ -412,7 +429,7 @@ func (task *MySQLReaderTask) convertToColumn(value interface{}) element.Column {
 	case string:
 		return element.NewStringColumn(v)
 	case []byte:
-		return element.NewStringColumn(string(v))
+		return element.NewBytesColumn(v)
 	case time.Time:
 		return element.NewDateColumn(v)
 	case bool:
@@ -423,11 +440,11 @@ func (task *MySQLReaderTask) convertToColumn(value interface{}) element.Column {
 	}
 }
 
-func (task *MySQLReaderTask) Post() error {
+func (task *SQLServerReaderTask) Post() error {
 	return nil
 }
 
-func (task *MySQLReaderTask) Destroy() error {
+func (task *SQLServerReaderTask) Destroy() error {
 	if task.db != nil {
 		if sqlDB, err := task.db.DB(); err == nil {
 			sqlDB.Close()

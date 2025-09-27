@@ -379,3 +379,71 @@ func (c *BoolColumn) GetAsBytes() ([]byte, error) {
 	}
 	return []byte(c.GetAsString()), nil
 }
+
+// BytesColumn 字节列
+type BytesColumn struct {
+	BaseColumn
+}
+
+func NewBytesColumn(value []byte) *BytesColumn {
+	col := &BytesColumn{}
+	if value == nil {
+		col.isNull = true
+		col.byteSize = 0
+	} else {
+		col.value = value
+		col.byteSize = len(value)
+	}
+	col.colType = TypeBytes
+	return col
+}
+
+func NewNullBytesColumn() *BytesColumn {
+	col := &BytesColumn{}
+	col.isNull = true
+	col.colType = TypeBytes
+	col.byteSize = 0
+	return col
+}
+
+func (c *BytesColumn) GetAsString() string {
+	if c.isNull {
+		return ""
+	}
+	return string(c.value.([]byte))
+}
+
+func (c *BytesColumn) GetAsLong() (int64, error) {
+	if c.isNull {
+		return 0, fmt.Errorf("null value cannot be converted to long")
+	}
+	return 0, fmt.Errorf("bytes cannot be converted to long")
+}
+
+func (c *BytesColumn) GetAsDouble() (float64, error) {
+	if c.isNull {
+		return 0, fmt.Errorf("null value cannot be converted to double")
+	}
+	return 0, fmt.Errorf("bytes cannot be converted to double")
+}
+
+func (c *BytesColumn) GetAsDate() (time.Time, error) {
+	if c.isNull {
+		return time.Time{}, fmt.Errorf("null value cannot be converted to date")
+	}
+	return time.Time{}, fmt.Errorf("bytes cannot be converted to date")
+}
+
+func (c *BytesColumn) GetAsBool() (bool, error) {
+	if c.isNull {
+		return false, fmt.Errorf("null value cannot be converted to bool")
+	}
+	return false, fmt.Errorf("bytes cannot be converted to bool")
+}
+
+func (c *BytesColumn) GetAsBytes() ([]byte, error) {
+	if c.isNull {
+		return nil, fmt.Errorf("null value cannot be converted to bytes")
+	}
+	return c.value.([]byte), nil
+}

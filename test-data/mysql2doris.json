@@ -1,0 +1,52 @@
+{
+    "job": {
+        "setting": {
+            "speed": {
+                "channel": 4
+            }
+        },
+        "content": [
+            {
+                "reader": {
+                    "name": "mysqlreader",
+                    "parameter": {
+                        "username": "root",
+                        "password": "password",
+                        "connection": [
+                            {
+                                "jdbcUrl": ["jdbc:mysql://127.0.0.1:3306/test_db"],
+                                "table": ["users"]
+                            }
+                        ],
+                        "column": ["id", "name", "age", "email", "created_at"],
+                        "splitPk": "id"
+                    }
+                },
+                "writer": {
+                    "name": "doriswriter",
+                    "parameter": {
+                        "loadUrl": ["127.0.0.1:8030"],
+                        "username": "root",
+                        "password": "password",
+                        "connection": [
+                            {
+                                "jdbcUrl": "jdbc:mysql://127.0.0.1:9030/doris_db",
+                                "selectedDatabase": "doris_db",
+                                "table": ["users"]
+                            }
+                        ],
+                        "column": ["id", "name", "age", "email", "created_at"],
+                        "loadProps": {
+                            "format": "json",
+                            "strip_outer_array": true,
+                            "jsonpaths": "[\"$.id\", \"$.name\", \"$.age\", \"$.email\", \"$.created_at\"]"
+                        },
+                        "maxBatchRows": 100000,
+                        "batchSize": 52428800,
+                        "flushInterval": 10000
+                    }
+                }
+            }
+        ]
+    }
+}

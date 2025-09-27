@@ -1,0 +1,36 @@
+{
+    "job": {
+        "setting": {
+            "speed": {
+                "channel": 1
+            }
+        },
+        "content": [
+            {
+                "reader": {
+                    "name": "txtfilereader",
+                    "parameter": {
+                        "path": "/Users/longkeyy/GolandProjects/go-datax/test-data/sample.csv",
+                        "encoding": "UTF-8",
+                        "column": ["*"],
+                        "fieldDelimiter": ",",
+                        "skipHeader": true,
+                        "nullFormat": "\\N"
+                    }
+                },
+                "writer": {
+                    "name": "txtfilewriter",
+                    "parameter": {
+                        "path": "/Users/longkeyy/GolandProjects/go-datax/test-data/output",
+                        "fileName": "wildcard_result",
+                        "writeMode": "truncate",
+                        "fieldDelimiter": "|",
+                        "encoding": "UTF-8",
+                        "nullFormat": "\\N",
+                        "fileFormat": "text"
+                    }
+                }
+            }
+        ]
+    }
+}

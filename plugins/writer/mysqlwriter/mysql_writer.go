@@ -29,7 +29,7 @@ type MySQLWriterJob struct {
 	postSql      []string
 	writeMode    string
 	batchSize    int
-	// sessionConf  map[string]string // 暂不支持
+	sessionConf  []string
 }
 
 func NewMySQLWriterJob() *MySQLWriterJob {
@@ -91,8 +91,8 @@ func (job *MySQLWriterJob) Init(config *config.Configuration) error {
 		job.batchSize = DefaultBatchSize
 	}
 
-	// 获取session配置 (简化实现，暂不支持session配置)
-	// job.sessionConf = config.GetMap("parameter.session")
+	// 获取session配置
+	job.sessionConf = config.GetStringList("parameter.session")
 
 	log.Printf("MySQL Writer initialized: tables=%v, columns=%v, writeMode=%s, batchSize=%d",
 		job.tables, job.columns, job.writeMode, job.batchSize)
@@ -196,15 +196,14 @@ func (job *MySQLWriterJob) connect() (*gorm.DB, error) {
 		return nil, fmt.Errorf("failed to connect to database: %v", err)
 	}
 
-	// 应用session配置 (简化实现，暂不支持session配置)
-	// if len(job.sessionConf) > 0 {
-	//	for key, value := range job.sessionConf {
-	//		sql := fmt.Sprintf("SET SESSION %s = %s", key, value)
-	//		if err := db.Exec(sql).Error; err != nil {
-	//			log.Printf("Warning: failed to set session %s = %s: %v", key, value, err)
-	//		}
-	//	}
-	// }
+	// 应用session配置
+	if len(job.sessionConf) > 0 {
+		for _, sessionSQL := range job.sessionConf {
+			if err := db.Exec(sessionSQL).Error; err != nil {
+				log.Printf("Warning: failed to execute session SQL: %s, error: %v", sessionSQL, err)
+			}
+		}
+	}
 
 	return db, nil
 }
@@ -236,14 +235,14 @@ func (job *MySQLWriterJob) convertJdbcUrl(jdbcUrl string) (string, error) {
 		database = dbAndParams
 	}
 
-	// 构建MySQL DSN字符串
-	dsn := fmt.Sprintf("%s:%s@tcp(%s)/%s?parseTime=true&loc=Local",
+	// 构建MySQL DSN字符串，按照DataX规范自动添加参数
+	dsn := fmt.Sprintf("%s:%s@tcp(%s)/%s?parseTime=true&loc=Local&yearIsDateType=false&zeroDateTimeBehavior=convertToNull&rewriteBatchedStatements=true",
 		job.username,
 		job.password,
 		hostPort,
 		database)
 
-	// 添加额外参数
+	// 添加用户配置的额外参数
 	if params != "" {
 		dsn += "&" + params
 	}
@@ -367,7 +366,7 @@ func (task *MySQLWriterTask) flushRecords() error {
 	case "update":
 		return task.updateRecords()
 	default:
-		return fmt.Errorf("unsupported write mode: %s", task.writerJob.writeMode)
+		return fmt.Errorf("unsupported write mode: %s, supported modes: insert, replace, update", task.writerJob.writeMode)
 	}
 }
 
@@ -461,8 +460,52 @@ func (task *MySQLWriterTask) replaceRecords() error {
 }
 
 func (task *MySQLWriterTask) updateRecords() error {
-	// UPDATE模式需要配置主键，这里简化实现
-	return fmt.Errorf("UPDATE mode is not implemented yet")
+	table := task.writerJob.tables[0]
+	columns := task.writerJob.columns
+
+	// 构建INSERT ... ON DUPLICATE KEY UPDATE语句
+	placeholders := make([]string, len(columns))
+	for i := range placeholders {
+		placeholders[i] = "?"
+	}
+
+	// 准备批量数据
+	values := make([]interface{}, 0, len(task.records)*len(columns))
+	for _, record := range task.records {
+		for i := range columns {
+			if i < record.GetColumnNumber() {
+				values = append(values, task.convertColumnValue(record.GetColumn(i)))
+			} else {
+				values = append(values, nil)
+			}
+		}
+	}
+
+	// 构建UPDATE子句 - 除第一列（通常是主键）外的所有列
+	updateClauses := make([]string, 0, len(columns)-1)
+	for i := 1; i < len(columns); i++ {
+		updateClauses = append(updateClauses, fmt.Sprintf("`%s`=VALUES(`%s`)", columns[i], columns[i]))
+	}
+
+	// 构建批量INSERT ... ON DUPLICATE KEY UPDATE语句
+	valueClause := "(" + strings.Join(placeholders, ", ") + ")"
+	valueClauses := make([]string, len(task.records))
+	for i := range valueClauses {
+		valueClauses[i] = valueClause
+	}
+
+	batchSQL := fmt.Sprintf("INSERT INTO `%s` (`%s`) VALUES %s ON DUPLICATE KEY UPDATE %s",
+		table,
+		strings.Join(columns, "`, `"),
+		strings.Join(valueClauses, ", "),
+		strings.Join(updateClauses, ", "))
+
+	// 执行批量更新插入
+	if err := task.db.Exec(batchSQL, values...).Error; err != nil {
+		return fmt.Errorf("failed to update records: %v", err)
+	}
+
+	return nil
 }
 
 func (task *MySQLWriterTask) convertColumnValue(column element.Column) interface{} {

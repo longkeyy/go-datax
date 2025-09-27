@@ -1,0 +1,76 @@
+{
+    "job": {
+        "setting": {
+            "speed": {
+                "channel": 2
+            }
+        },
+        "content": [
+            {
+                "reader": {
+                    "name": "mongoreader",
+                    "parameter": {
+                        "address": ["127.0.0.1:27017"],
+                        "userName": "",
+                        "userPassword": "",
+                        "dbName": "test",
+                        "collectionName": "users",
+                        "column": [
+                            {
+                                "name": "_id",
+                                "type": "ObjectId"
+                            },
+                            {
+                                "name": "name",
+                                "type": "string"
+                            },
+                            {
+                                "name": "age",
+                                "type": "long"
+                            },
+                            {
+                                "name": "tags",
+                                "type": "array",
+                                "splitter": ","
+                            }
+                        ],
+                        "query": "{\"status\": \"active\"}"
+                    }
+                },
+                "writer": {
+                    "name": "mongowriter",
+                    "parameter": {
+                        "address": ["127.0.0.1:27017"],
+                        "userName": "admin",
+                        "userPassword": "password",
+                        "dbName": "test",
+                        "collectionName": "users_copy",
+                        "column": [
+                            {
+                                "name": "_id",
+                                "type": "ObjectId"
+                            },
+                            {
+                                "name": "name",
+                                "type": "string"
+                            },
+                            {
+                                "name": "age",
+                                "type": "long"
+                            },
+                            {
+                                "name": "tags",
+                                "type": "array",
+                                "splitter": ",",
+                                "itemtype": "string"
+                            }
+                        ],
+                        "writeMode": {
+                            "isReplace": "false"
+                        }
+                    }
+                }
+            }
+        ]
+    }
+}

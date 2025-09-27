@@ -222,3 +222,14 @@ func (c *Configuration) IsExists(path string) bool {
 func (c *Configuration) GetStringArray(path string) []string {
 	return c.GetStringList(path)
 }
+
+func (c *Configuration) GetMap(path string) map[string]interface{} {
+	value := c.Get(path)
+	if value == nil {
+		return nil
+	}
+	if mapVal, ok := value.(map[string]interface{}); ok {
+		return mapVal
+	}
+	return nil
+}

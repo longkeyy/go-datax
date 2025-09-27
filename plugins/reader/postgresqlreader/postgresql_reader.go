@@ -29,6 +29,7 @@ type PostgreSQLReaderJob struct {
 	columns  []string
 	where    string
 	splitPk  string
+	querySql string // 支持自定义查询SQL
 }
 
 func NewPostgreSQLReaderJob() *PostgreSQLReaderJob {
@@ -55,35 +56,50 @@ func (job *PostgreSQLReaderJob) Init(config *config.Configuration) error {
 	// 处理第一个连接配置
 	conn := connections[0]
 	job.jdbcUrls = conn.GetStringList("jdbcUrl")
-	job.tables = conn.GetStringList("table")
 
-	if len(job.jdbcUrls) == 0 || len(job.tables) == 0 {
-		return fmt.Errorf("jdbcUrl and table are required")
-	}
-
-	// 获取列信息
-	job.columns = config.GetStringList("parameter.column")
-	if len(job.columns) == 0 {
-		return fmt.Errorf("column configuration is required")
+	if len(job.jdbcUrls) == 0 {
+		return fmt.Errorf("jdbcUrl is required")
 	}
 
 	// 获取可选参数
 	job.where = config.GetString("parameter.where")
 	job.splitPk = config.GetString("parameter.splitPk")
+	job.querySql = config.GetString("parameter.querySql")
 
-	log.Printf("PostgreSQL Reader initialized: tables=%v, columns=%v", job.tables, job.columns)
+	// 检查配置模式：querySql 或 table/column 模式
+	if job.querySql != "" {
+		// querySql模式：直接使用用户提供的SQL查询
+		log.Printf("PostgreSQL Reader initialized with querySql mode")
+	} else {
+		// table/column模式：需要table和column配置
+		job.tables = conn.GetStringList("table")
+		job.columns = config.GetStringList("parameter.column")
+
+		if len(job.tables) == 0 {
+			return fmt.Errorf("table is required when querySql is not specified")
+		}
+		if len(job.columns) == 0 {
+			return fmt.Errorf("column is required when querySql is not specified")
+		}
+		log.Printf("PostgreSQL Reader initialized with table/column mode: tables=%v, columns=%v", job.tables, job.columns)
+	}
+
 	return nil
 }
 
 func (job *PostgreSQLReaderJob) Split(adviceNumber int) ([]*config.Configuration, error) {
 	taskConfigs := make([]*config.Configuration, 0)
 
-	// 如果没有设置splitPk，则不进行分片，使用单个任务
-	if job.splitPk == "" {
+	// 如果使用querySql模式或没有设置splitPk，则不进行分片，使用单个任务
+	if job.querySql != "" || job.splitPk == "" {
 		taskConfig := job.config.Clone()
 		taskConfig.Set("taskId", 0)
 		taskConfigs = append(taskConfigs, taskConfig)
-		log.Printf("No splitPk specified, using single task")
+		if job.querySql != "" {
+			log.Printf("Using querySql mode, single task")
+		} else {
+			log.Printf("No splitPk specified, using single task")
+		}
 		return taskConfigs, nil
 	}
 
@@ -314,7 +330,12 @@ func (task *PostgreSQLReaderTask) StartRead(recordSender plugin.RecordSender) er
 }
 
 func (task *PostgreSQLReaderTask) buildQuery() (string, error) {
-	// 构建SELECT语句
+	// 如果配置了querySql，直接使用用户提供的SQL
+	if task.readerJob.querySql != "" {
+		return task.readerJob.querySql, nil
+	}
+
+	// 构建SELECT语句（table/column模式）
 	columns := task.readerJob.columns
 	table := task.readerJob.tables[0]
 

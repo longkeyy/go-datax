@@ -1,0 +1,45 @@
+{
+    "job": {
+        "setting": {
+            "speed": {
+                "channel": 2
+            }
+        },
+        "content": [
+            {
+                "reader": {
+                    "name": "streamreader",
+                    "parameter": {
+                        "sliceRecordCount": 1000,
+                        "column": [
+                            {
+                                "type": "long",
+                                "value": "123"
+                            },
+                            {
+                                "type": "string",
+                                "value": "hello world"
+                            },
+                            {
+                                "type": "double"
+                            },
+                            {
+                                "type": "bool"
+                            },
+                            {
+                                "type": "date"
+                            }
+                        ]
+                    }
+                },
+                "writer": {
+                    "name": "streamwriter",
+                    "parameter": {
+                        "print": true,
+                        "fieldDelimiter": "\t"
+                    }
+                }
+            }
+        ]
+    }
+}
