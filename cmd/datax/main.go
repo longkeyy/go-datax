@@ -22,8 +22,8 @@ import (
 	_ "github.com/longkeyy/go-datax/plugins/writer/txtfilewriter"
 	_ "github.com/longkeyy/go-datax/plugins/reader/clickhousereader"
 	_ "github.com/longkeyy/go-datax/plugins/writer/clickhousewriter"
-	_ "github.com/longkeyy/go-datax/plugins/reader/oraclereader"
-	_ "github.com/longkeyy/go-datax/plugins/writer/oraclewriter"
+	// _ "github.com/longkeyy/go-datax/plugins/reader/oraclereader"
+	// _ "github.com/longkeyy/go-datax/plugins/writer/oraclewriter"
 )
 
 func main() {

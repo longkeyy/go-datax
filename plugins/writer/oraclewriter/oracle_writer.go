@@ -10,9 +10,8 @@ import (
 	"github.com/longkeyy/go-datax/common/config"
 	"github.com/longkeyy/go-datax/common/element"
 	"github.com/longkeyy/go-datax/common/plugin"
-	"github.com/longkeyy/go-datax/common/spi"
 
-	_ "github.com/godror/godror"
+	// _ "github.com/godror/godror"
 )
 
 type OracleWriterJob struct {
@@ -317,7 +316,7 @@ func (task *OracleWriterTask) StartWrite(ctx context.Context, recordReceiver plu
 	for {
 		record, err := recordReceiver.GetFromReader()
 		if err != nil {
-			if err == spi.ErrChannelClosed {
+			if err == plugin.ErrChannelClosed {
 				break
 			}
 			return err

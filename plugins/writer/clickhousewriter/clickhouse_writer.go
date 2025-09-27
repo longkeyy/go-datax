@@ -149,6 +149,12 @@ func (job *ClickHouseWriterJob) parseConnectionString(jdbcUrl string) (clickhous
 		host = hostPort
 	}
 
+	// 转换session配置为ClickHouse Settings
+	settings := make(clickhouse.Settings)
+	for k, v := range job.session {
+		settings[k] = v
+	}
+
 	options := clickhouse.Options{
 		Addr: []string{fmt.Sprintf("%s:%d", host, port)},
 		Auth: clickhouse.Auth{
@@ -156,7 +162,7 @@ func (job *ClickHouseWriterJob) parseConnectionString(jdbcUrl string) (clickhous
 			Username: job.username,
 			Password: job.password,
 		},
-		Settings: job.session,
+		Settings: settings,
 	}
 
 	return options, nil
