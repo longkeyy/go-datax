@@ -57,6 +57,16 @@ func (job *SQLiteWriterJob) Init(config *config.Configuration) error {
 		return fmt.Errorf("column configuration is required")
 	}
 
+	// 如果配置为*，需要获取表的实际列名
+	if len(job.columns) == 1 && job.columns[0] == "*" {
+		actualColumns, err := job.getTableColumns()
+		if err != nil {
+			log.Printf("Warning: failed to get table columns, will use * as is: %v", err)
+		} else {
+			job.columns = actualColumns
+		}
+	}
+
 	// 获取可选参数
 	job.preSql = config.GetStringList("parameter.preSql")
 	job.postSql = config.GetStringList("parameter.postSql")
@@ -96,6 +106,47 @@ func (job *SQLiteWriterJob) Prepare() error {
 		}
 	}
 	return nil
+}
+
+func (job *SQLiteWriterJob) getTableColumns() ([]string, error) {
+	db, err := job.connect()
+	if err != nil {
+		return nil, err
+	}
+	defer func() {
+		if sqlDB, err := db.DB(); err == nil {
+			sqlDB.Close()
+		}
+	}()
+
+	// 查询表的列信息 (SQLite使用pragma)
+	query := fmt.Sprintf("PRAGMA table_info(%s)", job.tables[0])
+
+	rows, err := db.Raw(query).Rows()
+	if err != nil {
+		return nil, fmt.Errorf("failed to query table columns: %v", err)
+	}
+	defer rows.Close()
+
+	var columns []string
+	for rows.Next() {
+		var cid int
+		var columnName, dataType string
+		var notNull, pk int
+		var defaultValue interface{}
+
+		if err := rows.Scan(&cid, &columnName, &dataType, &notNull, &defaultValue, &pk); err != nil {
+			return nil, fmt.Errorf("failed to scan column info: %v", err)
+		}
+		columns = append(columns, columnName)
+	}
+
+	if len(columns) == 0 {
+		return nil, fmt.Errorf("no columns found for table %s", job.tables[0])
+	}
+
+	log.Printf("Retrieved table columns for %s: %v", job.tables[0], columns)
+	return columns, nil
 }
 
 func (job *SQLiteWriterJob) Split(adviceNumber int) ([]*config.Configuration, error) {

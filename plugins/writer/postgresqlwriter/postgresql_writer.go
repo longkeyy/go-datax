@@ -67,12 +67,64 @@ func (job *PostgreSQLWriterJob) Init(config *config.Configuration) error {
 		return fmt.Errorf("column configuration is required")
 	}
 
+	// 如果配置为*，需要获取表的实际列名
+	if len(job.columns) == 1 && job.columns[0] == "*" {
+		actualColumns, err := job.getTableColumns()
+		if err != nil {
+			log.Printf("Warning: failed to get table columns, will use * as is: %v", err)
+		} else {
+			job.columns = actualColumns
+		}
+	}
+
 	// 获取预处理SQL
 	job.preSql = config.GetStringList("parameter.preSql")
 	job.postSql = config.GetStringList("parameter.postSql")
 
 	log.Printf("PostgreSQL Writer initialized: table=%s, columns=%v", job.table, job.columns)
 	return nil
+}
+
+func (job *PostgreSQLWriterJob) getTableColumns() ([]string, error) {
+	db, err := job.connect()
+	if err != nil {
+		return nil, err
+	}
+	defer func() {
+		if sqlDB, err := db.DB(); err == nil {
+			sqlDB.Close()
+		}
+	}()
+
+	// 查询表的列信息
+	query := `
+		SELECT column_name
+		FROM information_schema.columns
+		WHERE table_schema = 'public'
+		AND table_name = ?
+		ORDER BY ordinal_position`
+
+	rows, err := db.Raw(query, job.table).Rows()
+	if err != nil {
+		return nil, fmt.Errorf("failed to query table columns: %v", err)
+	}
+	defer rows.Close()
+
+	var columns []string
+	for rows.Next() {
+		var columnName string
+		if err := rows.Scan(&columnName); err != nil {
+			return nil, fmt.Errorf("failed to scan column name: %v", err)
+		}
+		columns = append(columns, columnName)
+	}
+
+	if len(columns) == 0 {
+		return nil, fmt.Errorf("no columns found for table %s", job.table)
+	}
+
+	log.Printf("Retrieved table columns for %s: %v", job.table, columns)
+	return columns, nil
 }
 
 func (job *PostgreSQLWriterJob) Split(mandatoryNumber int) ([]*config.Configuration, error) {
@@ -289,19 +341,8 @@ func (task *PostgreSQLWriterTask) buildBatchInsertSQL(records []element.Record) 
 	table := task.writerJob.table
 	columns := task.writerJob.columns
 
-	// 构建INSERT语句头部
-	var columnStr string
-	if len(columns) == 1 && columns[0] == "*" {
-		// 如果是*，需要从记录中推断列数
-		columnCount := records[0].GetColumnNumber()
-		columnNames := make([]string, columnCount)
-		for i := 0; i < columnCount; i++ {
-			columnNames[i] = fmt.Sprintf("col_%d", i+1)
-		}
-		columnStr = strings.Join(columnNames, ", ")
-	} else {
-		columnStr = strings.Join(columns, ", ")
-	}
+	// 构建INSERT语句头部 (此时columns已经是实际的列名，不会是*)
+	columnStr := strings.Join(columns, ", ")
 
 	// 构建VALUES部分
 	valuePlaceholders := make([]string, len(records))
@@ -310,11 +351,9 @@ func (task *PostgreSQLWriterTask) buildBatchInsertSQL(records []element.Record) 
 
 	for i, record := range records {
 		columnCount := record.GetColumnNumber()
-		if len(columns) != 1 || columns[0] != "*" {
-			if columnCount != len(columns) {
-				return "", nil, fmt.Errorf("record column count (%d) doesn't match config columns (%d)",
-					columnCount, len(columns))
-			}
+		if columnCount != len(columns) {
+			return "", nil, fmt.Errorf("record column count (%d) doesn't match config columns (%d)",
+				columnCount, len(columns))
 		}
 
 		// 为每个记录构建占位符

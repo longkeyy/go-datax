@@ -12,7 +12,7 @@
           "parameter": {
             "username": "postgres",
             "password": "postgres",
-            "column": ["id", "name", "age", "email", "created_at"],
+            "column": ["*"],
             "splitPk": "id",
             "connection": [
               {
@@ -27,7 +27,7 @@
           "parameter": {
             "username": "postgres",
             "password": "postgres",
-            "column": ["id", "name", "age", "email", "created_at"],
+            "column": ["*"],
             "connection": [
               {
                 "jdbcUrl": "jdbc:postgresql://localhost:5432/datax",

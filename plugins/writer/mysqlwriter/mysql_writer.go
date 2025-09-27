@@ -68,6 +68,16 @@ func (job *MySQLWriterJob) Init(config *config.Configuration) error {
 		return fmt.Errorf("column configuration is required")
 	}
 
+	// 如果配置为*，需要获取表的实际列名
+	if len(job.columns) == 1 && job.columns[0] == "*" {
+		actualColumns, err := job.getTableColumns()
+		if err != nil {
+			log.Printf("Warning: failed to get table columns, will use * as is: %v", err)
+		} else {
+			job.columns = actualColumns
+		}
+	}
+
 	// 获取可选参数
 	job.preSql = config.GetStringList("parameter.preSql")
 	job.postSql = config.GetStringList("parameter.postSql")
@@ -110,6 +120,48 @@ func (job *MySQLWriterJob) Prepare() error {
 		}
 	}
 	return nil
+}
+
+func (job *MySQLWriterJob) getTableColumns() ([]string, error) {
+	db, err := job.connect()
+	if err != nil {
+		return nil, err
+	}
+	defer func() {
+		if sqlDB, err := db.DB(); err == nil {
+			sqlDB.Close()
+		}
+	}()
+
+	// 查询表的列信息
+	query := `
+		SELECT column_name
+		FROM information_schema.columns
+		WHERE table_schema = DATABASE()
+		AND table_name = ?
+		ORDER BY ordinal_position`
+
+	rows, err := db.Raw(query, job.tables[0]).Rows()
+	if err != nil {
+		return nil, fmt.Errorf("failed to query table columns: %v", err)
+	}
+	defer rows.Close()
+
+	var columns []string
+	for rows.Next() {
+		var columnName string
+		if err := rows.Scan(&columnName); err != nil {
+			return nil, fmt.Errorf("failed to scan column name: %v", err)
+		}
+		columns = append(columns, columnName)
+	}
+
+	if len(columns) == 0 {
+		return nil, fmt.Errorf("no columns found for table %s", job.tables[0])
+	}
+
+	log.Printf("Retrieved table columns for %s: %v", job.tables[0], columns)
+	return columns, nil
 }
 
 func (job *MySQLWriterJob) Split(adviceNumber int) ([]*config.Configuration, error) {
