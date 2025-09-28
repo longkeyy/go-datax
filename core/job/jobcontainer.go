@@ -8,21 +8,31 @@ import (
 	"github.com/longkeyy/go-datax/common/config"
 	"github.com/longkeyy/go-datax/common/logger"
 	"github.com/longkeyy/go-datax/common/plugin"
+	"github.com/longkeyy/go-datax/common/statistics"
 	"github.com/longkeyy/go-datax/core/taskgroup"
 	"go.uber.org/zap"
 )
 
 // JobContainer 作业容器，负责作业的生命周期管理
 type JobContainer struct {
-	configuration *config.Configuration
-	readerPlugin  string
-	writerPlugin  string
-	needChannels  int
+	configuration   *config.Configuration
+	readerPlugin    string
+	writerPlugin    string
+	needChannels    int
+	communicator    *statistics.JobContainerCommunicator
+	schedulerReporter *statistics.SchedulerReporter
+	totalStage      int
+	startTimeStamp  int64
+	endTimeStamp    int64
+	startTransferTimeStamp int64
+	endTransferTimeStamp   int64
 }
 
 func NewJobContainer(configuration *config.Configuration) *JobContainer {
+	communicator := statistics.NewJobContainerCommunicator(configuration)
 	return &JobContainer{
 		configuration: configuration,
+		communicator:  communicator,
 	}
 }
 
@@ -30,38 +40,82 @@ func (jc *JobContainer) Start() error {
 	appLogger := logger.App()
 	appLogger.Info("DataX JobContainer starts job")
 
+	// 记录开始时间
 	startTime := time.Now()
+	jc.startTimeStamp = startTime.UnixMilli()
 	var err error
+	hasException := false
 
 	defer func() {
+		// 停止调度器汇报
+		if jc.schedulerReporter != nil {
+			jc.schedulerReporter.Stop()
+		}
+
 		endTime := time.Now()
+		jc.endTimeStamp = endTime.UnixMilli()
 		duration := endTime.Sub(startTime)
+
+		if !hasException {
+			// 输出最终统计信息
+			jc.logStatistics()
+		}
+
 		appLogger.Info("Job completed", zap.Duration("duration", duration))
+	}()
+
+	defer func() {
+		if r := recover(); r != nil {
+			hasException = true
+			appLogger.Error("Job panicked", zap.Any("panic", r))
+		}
 	}()
 
 	// 初始化
 	if err = jc.init(); err != nil {
+		hasException = true
 		return fmt.Errorf("job initialization failed: %v", err)
 	}
 
 	// 准备阶段
 	if err = jc.prepare(); err != nil {
+		hasException = true
 		return fmt.Errorf("job preparation failed: %v", err)
 	}
 
 	// 拆分任务
 	readerTaskConfigs, writerTaskConfigs, err := jc.split()
 	if err != nil {
+		hasException = true
 		return fmt.Errorf("job split failed: %v", err)
 	}
 
+	// 设置总阶段数
+	jc.totalStage = len(readerTaskConfigs)
+
+	// 初始化SchedulerReporter进行实时汇报
+	reportInterval := time.Duration(jc.configuration.GetIntWithDefault("core.container.job.reportInterval", 30000)) * time.Millisecond
+	sleepInterval := time.Duration(jc.configuration.GetIntWithDefault("core.container.job.sleepInterval", 10000)) * time.Millisecond
+	jc.schedulerReporter = statistics.NewSchedulerReporter(jc.communicator, reportInterval, sleepInterval, jc.totalStage)
+
+	// 启动实时汇报
+	jc.schedulerReporter.Start()
+
+	// 记录传输开始时间
+	jc.startTransferTimeStamp = time.Now().UnixMilli()
+
 	// 调度执行
 	if err = jc.schedule(readerTaskConfigs, writerTaskConfigs); err != nil {
+		hasException = true
 		return fmt.Errorf("job schedule failed: %v", err)
 	}
 
+	// 记录传输结束时间
+	jc.endTransferTimeStamp = time.Now().UnixMilli()
+
 	// 后处理
 	if err = jc.post(); err != nil {
+		hasException = true
 		return fmt.Errorf("job post processing failed: %v", err)
 	}
 
@@ -164,6 +218,12 @@ func (jc *JobContainer) schedule(readerTaskConfigs, writerTaskConfigs []*config.
 	appLogger := logger.App()
 	appLogger.Info("Starting task groups", zap.Int("taskGroups", taskCount))
 
+	// 为TaskGroup注册Communication
+	for i := 0; i < taskCount; i++ {
+		communication := statistics.NewCommunication()
+		jc.communicator.RegisterCommunication(i, communication)
+	}
+
 	// 创建TaskGroup并发执行
 	var wg sync.WaitGroup
 	errChan := make(chan error, taskCount)
@@ -172,6 +232,15 @@ func (jc *JobContainer) schedule(readerTaskConfigs, writerTaskConfigs []*config.
 		wg.Add(1)
 		go func(index int) {
 			defer wg.Done()
+			defer func() {
+				// 标记任务完成
+				if comm := jc.communicator.GetCommunication(index); comm != nil {
+					comm.IncreaseCounter(statistics.STAGE, 1)
+					if comm.GetState() != statistics.StateFailed {
+						comm.SetState(statistics.StateSucceeded)
+					}
+				}
+			}()
 
 			taskGroupConfig := jc.configuration.Clone()
 			taskGroupConfig.Set("taskGroup.id", index)
@@ -180,7 +249,20 @@ func (jc *JobContainer) schedule(readerTaskConfigs, writerTaskConfigs []*config.
 
 			taskGroupContainer := taskgroup.NewTaskGroupContainer(taskGroupConfig, index)
 			if err := taskGroupContainer.Start(readerTaskConfigs[index], writerTaskConfigs[index]); err != nil {
+				// 标记任务失败
+				if comm := jc.communicator.GetCommunication(index); comm != nil {
+					comm.SetState(statistics.StateFailed)
+					comm.SetThrowable(err)
+				}
 				errChan <- fmt.Errorf("taskGroup %d failed: %v", index, err)
+			} else {
+				// 任务成功，合并TaskGroupContainer的统计信息到JobContainer
+				if jobComm := jc.communicator.GetCommunication(index); jobComm != nil && taskGroupContainer != nil {
+					// 获取TaskGroupContainer的Communication并合并
+					if tgComm := taskGroupContainer.GetCommunication(); tgComm != nil {
+						jobComm.MergeFrom(tgComm)
+					}
+				}
 			}
 		}(i)
 	}
@@ -199,6 +281,54 @@ func (jc *JobContainer) schedule(readerTaskConfigs, writerTaskConfigs []*config.
 func (jc *JobContainer) post() error {
 	// 后处理逻辑
 	return nil
+}
+
+// logStatistics 输出最终统计信息
+func (jc *JobContainer) logStatistics() {
+	totalCosts := (jc.endTimeStamp - jc.startTimeStamp) / 1000
+	transferCosts := (jc.endTransferTimeStamp - jc.startTransferTimeStamp) / 1000
+	if transferCosts <= 0 {
+		transferCosts = 1
+	}
+
+	if jc.communicator == nil {
+		return
+	}
+
+	communication := jc.communicator.Collect()
+	communication.SetTimestamp(jc.endTimeStamp)
+
+	// 计算速度
+	byteSpeedPerSecond := communication.GetLongCounter(statistics.READ_SUCCEED_BYTES) / transferCosts
+	recordSpeedPerSecond := communication.GetLongCounter(statistics.READ_SUCCEED_RECORDS) / transferCosts
+
+	communication.SetLongCounter(statistics.BYTE_SPEED, byteSpeedPerSecond)
+	communication.SetLongCounter(statistics.RECORD_SPEED, recordSpeedPerSecond)
+
+	// 汇报最终统计
+	jc.communicator.Report(communication)
+
+	appLogger := logger.App()
+	appLogger.Info("=================================== Final Job Statistics ===================================")
+	appLogger.Info("Job Start Time", zap.Time("startTime", time.UnixMilli(jc.startTimeStamp)))
+	appLogger.Info("Job End Time", zap.Time("endTime", time.UnixMilli(jc.endTimeStamp)))
+	appLogger.Info("Job Total Cost", zap.String("totalCosts", fmt.Sprintf("%ds", totalCosts)))
+	appLogger.Info("Job Average Throughput", zap.String("throughput", statistics.DefaultCommunicationTool.FormatBytes(byteSpeedPerSecond)+"/s"))
+	appLogger.Info("Record Write Speed", zap.String("recordSpeed", fmt.Sprintf("%d rec/s", recordSpeedPerSecond)))
+	appLogger.Info("Total Read Records", zap.Int64("totalReadRecords", statistics.DefaultCommunicationTool.GetTotalReadRecords(communication)))
+	appLogger.Info("Total Error Records", zap.Int64("totalErrorRecords", statistics.DefaultCommunicationTool.GetTotalErrorRecords(communication)))
+
+	// 输出Transformer统计
+	if communication.GetLongCounter(statistics.TRANSFORMER_SUCCEED_RECORDS) > 0 ||
+		communication.GetLongCounter(statistics.TRANSFORMER_FAILED_RECORDS) > 0 ||
+		communication.GetLongCounter(statistics.TRANSFORMER_FILTER_RECORDS) > 0 {
+		appLogger.Info("Transformer Success Records", zap.Int64("records", communication.GetLongCounter(statistics.TRANSFORMER_SUCCEED_RECORDS)))
+		appLogger.Info("Transformer Failed Records", zap.Int64("records", communication.GetLongCounter(statistics.TRANSFORMER_FAILED_RECORDS)))
+		appLogger.Info("Transformer Filter Records", zap.Int64("records", communication.GetLongCounter(statistics.TRANSFORMER_FILTER_RECORDS)))
+		appLogger.Info("Transformer Used Time", zap.String("usedTime", statistics.DefaultCommunicationTool.FormatTime(communication.GetLongCounter(statistics.TRANSFORMER_USED_TIME))))
+	}
+
+	appLogger.Info("==============================================================================================")
 }
 
 func (jc *JobContainer) createReaderJob(readerConfig *config.Configuration) (plugin.ReaderJob, error) {

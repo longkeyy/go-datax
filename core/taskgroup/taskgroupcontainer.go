@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"sync"
+	"time"
 
 	"github.com/longkeyy/go-datax/common/config"
 	"github.com/longkeyy/go-datax/common/element"
@@ -18,12 +19,19 @@ import (
 type TaskGroupContainer struct {
 	configuration *config.Configuration
 	taskGroupId   int
+	communication *statistics.Communication
+	communicator  *statistics.TaskGroupCommunicator
 }
 
 func NewTaskGroupContainer(configuration *config.Configuration, taskGroupId int) *TaskGroupContainer {
+	communication := statistics.NewCommunication()
+	communicator := statistics.NewTaskGroupCommunicator(configuration, taskGroupId)
+
 	return &TaskGroupContainer{
 		configuration: configuration,
 		taskGroupId:   taskGroupId,
+		communication: communication,
+		communicator:  communicator,
 	}
 }
 
@@ -31,6 +39,12 @@ func (tgc *TaskGroupContainer) Start(readerTaskConfig, writerTaskConfig *config.
 	// 创建带任务组上下文的日志器
 	taskLogger := logger.TaskGroupLogger(tgc.taskGroupId)
 	taskLogger.Info("TaskGroup starts", zap.Int("taskGroupId", tgc.taskGroupId))
+
+	// 注册Communication到Communicator
+	tgc.communicator.RegisterCommunication(tgc.taskGroupId, tgc.communication)
+
+	// 记录开始时间
+	startTime := time.Now()
 
 	// 创建可取消的context，用于任务间的协调取消
 	ctx, cancel := context.WithCancel(context.Background())
@@ -57,15 +71,19 @@ func (tgc *TaskGroupContainer) Start(readerTaskConfig, writerTaskConfig *config.
 		taskLogger.Info("Creating TransformerChannel", zap.Int("transformerCount", len(transformerExecutions)))
 		transformerChannel = plugin.NewTransformerChannel(bufferSize, transformerExecutions)
 		defer transformerChannel.Close()
-		recordSender = plugin.NewTransformerRecordSender(transformerChannel)
-		recordReceiver = plugin.NewRecordReceiver(transformerChannel.DefaultChannel)
+		baseSender := plugin.NewTransformerRecordSender(transformerChannel)
+		baseReceiver := plugin.NewRecordReceiver(transformerChannel.DefaultChannel)
+		recordSender = plugin.NewStatisticsRecordSender(baseSender, tgc.communication, tgc.taskGroupId)
+		recordReceiver = plugin.NewStatisticsRecordReceiver(baseReceiver, tgc.communication, tgc.taskGroupId)
 	} else {
 		// 如果没有Transformer，使用普通Channel
 		taskLogger.Debug("Creating standard channel (no transformers)")
 		channel := plugin.NewChannel(bufferSize)
 		defer channel.Close()
-		recordSender = plugin.NewRecordSender(channel)
-		recordReceiver = plugin.NewRecordReceiver(channel)
+		baseSender := plugin.NewRecordSender(channel)
+		baseReceiver := plugin.NewRecordReceiver(channel)
+		recordSender = plugin.NewStatisticsRecordSender(baseSender, tgc.communication, tgc.taskGroupId)
+		recordReceiver = plugin.NewStatisticsRecordReceiver(baseReceiver, tgc.communication, tgc.taskGroupId)
 	}
 
 	// 创建Reader和Writer任务
@@ -215,7 +233,19 @@ func (tgc *TaskGroupContainer) Start(readerTaskConfig, writerTaskConfig *config.
 		tgc.logTransformerStatistics(transformerChannel)
 	}
 
-	taskLogger.Info("TaskGroup completed")
+	// 计算并记录最终统计信息
+	endTime := time.Now()
+	duration := endTime.Sub(startTime)
+	tgc.communication.SetState(statistics.StateSucceeded)
+	tgc.communication.SetTimestamp(endTime.UnixMilli())
+
+	// 汇报最终统计
+	tgc.communicator.Report(tgc.communication)
+
+	taskLogger.Info("TaskGroup completed",
+		zap.Duration("duration", duration),
+		zap.Int64("totalRecords", tgc.communication.GetLongCounter(statistics.READ_SUCCEED_RECORDS)),
+		zap.Int64("errorRecords", tgc.communication.GetLongCounter(statistics.READ_FAILED_RECORDS)))
 	return nil
 }
 
@@ -388,4 +418,9 @@ func (tgc *TaskGroupContainer) logErrorStatistics(errorLimiter *statistics.Error
 	stats := errorLimiter.GetStatistics()
 	taskLogger := logger.TaskGroupLogger(tgc.taskGroupId)
 	taskLogger.Info("Job Statistics", zap.String("stats", stats.String()))
+}
+
+// GetCommunication 获取TaskGroupContainer的Communication实例
+func (tgc *TaskGroupContainer) GetCommunication() *statistics.Communication {
+	return tgc.communication
 }

@@ -36,7 +36,8 @@ Thumbs.db
 bin/
 dist/
 DataX-java/
-.claude/
 
 # Build artifacts
 *.log
+.claude/
+.mcp.json

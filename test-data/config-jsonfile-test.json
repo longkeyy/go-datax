@@ -1,0 +1,46 @@
+{
+    "job": {
+        "setting": {
+            "speed": {
+                "channel": 1
+            }
+        },
+        "content": [
+            {
+                "reader": {
+                    "name": "jsonfilereader",
+                    "parameter": {
+                        "path": ["../../test-data/sample-data/*.jsonl"],
+                        "autoInferSchema": true,
+                        "format": "auto",
+                        "encoding": "UTF-8",
+                        "column": [
+                            {"name": "id", "type": "long"},
+                            {"name": "name", "type": "string"},
+                            {"name": "email", "type": "string"},
+                            {"name": "created_at", "type": "date"},
+                            {"name": "active", "type": "boolean"}
+                        ]
+                    }
+                },
+                "writer": {
+                    "name": "jsonfilewriter",
+                    "parameter": {
+                        "path": "/tmp/output",
+                        "fileName": "converted_data",
+                        "format": "jsonl",
+                        "encoding": "UTF-8",
+                        "writeMode": "truncate",
+                        "column": [
+                            {"name": "id", "type": "long"},
+                            {"name": "name", "type": "string"},
+                            {"name": "email", "type": "string"},
+                            {"name": "created_at", "type": "date"},
+                            {"name": "active", "type": "boolean"}
+                        ]
+                    }
+                }
+            }
+        ]
+    }
+}

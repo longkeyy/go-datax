@@ -129,6 +129,35 @@ func (c *Configuration) GetIntWithDefault(path string, defaultValue int) int {
 	return value
 }
 
+func (c *Configuration) GetLong(path string) int64 {
+	value := c.Get(path)
+	if value == nil {
+		return 0
+	}
+
+	switch v := value.(type) {
+	case int:
+		return int64(v)
+	case int64:
+		return v
+	case float64:
+		return int64(v)
+	case string:
+		if i, err := strconv.ParseInt(v, 10, 64); err == nil {
+			return i
+		}
+	}
+	return 0
+}
+
+func (c *Configuration) GetLongWithDefault(path string, defaultValue int64) int64 {
+	value := c.GetLong(path)
+	if value == 0 && c.Get(path) == nil {
+		return defaultValue
+	}
+	return value
+}
+
 func (c *Configuration) GetBool(path string) bool {
 	value := c.Get(path)
 	if value == nil {

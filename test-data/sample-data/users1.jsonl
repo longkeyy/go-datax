@@ -1,0 +1,5 @@
+{"id": 1, "name": "John Doe", "email": "john@example.com", "created_at": "2023-01-01T10:00:00Z", "active": true}
+{"id": 2, "name": "Jane Smith", "email": "jane@example.com", "created_at": "2023-01-02T11:00:00Z", "active": false}
+{"id": 3, "name": "Bob Johnson", "email": "bob@example.com", "created_at": "2023-01-03T12:00:00Z", "active": true}
+{"id": 4, "name": "Alice Brown", "email": "alice@example.com", "created_at": "2023-01-04T13:00:00Z", "active": true}
+{"id": 5, "name": "Charlie Wilson", "email": "charlie@example.com", "created_at": "2023-01-05T14:00:00Z", "active": false}
