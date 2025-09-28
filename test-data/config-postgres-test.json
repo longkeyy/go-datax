@@ -1,0 +1,47 @@
+{
+    "job": {
+        "setting": {
+            "speed": {
+                "channel": 1
+            }
+        },
+        "content": [
+            {
+                "reader": {
+                    "name": "streamreader",
+                    "parameter": {
+                        "column": [
+                            {
+                                "value": "1",
+                                "type": "long"
+                            },
+                            {
+                                "value": "test_name",
+                                "type": "string"
+                            },
+                            {
+                                "value": "test@example.com",
+                                "type": "string"
+                            }
+                        ],
+                        "sliceRecordCount": 10
+                    }
+                },
+                "writer": {
+                    "name": "postgresqlwriter",
+                    "parameter": {
+                        "username": "test",
+                        "password": "test",
+                        "column": ["*"],
+                        "connection": [
+                            {
+                                "jdbcUrl": "jdbc:postgresql://localhost:5432/test",
+                                "table": ["test_table"]
+                            }
+                        ]
+                    }
+                }
+            }
+        ]
+    }
+}

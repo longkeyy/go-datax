@@ -3,16 +3,17 @@ package postgresqlreader
 import (
 	"database/sql"
 	"fmt"
-	"github.com/longkeyy/go-datax/common/config"
-	"github.com/longkeyy/go-datax/common/element"
-	"github.com/longkeyy/go-datax/common/plugin"
-	"log"
 	"strings"
 	"time"
 
+	"github.com/longkeyy/go-datax/common/config"
+	"github.com/longkeyy/go-datax/common/element"
+	"github.com/longkeyy/go-datax/common/logger"
+	"github.com/longkeyy/go-datax/common/plugin"
+	"go.uber.org/zap"
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
-	"gorm.io/gorm/logger"
+	gormLogger "gorm.io/gorm/logger"
 )
 
 const (
@@ -66,10 +67,12 @@ func (job *PostgreSQLReaderJob) Init(config *config.Configuration) error {
 	job.splitPk = config.GetString("parameter.splitPk")
 	job.querySql = config.GetString("parameter.querySql")
 
+	compLogger := logger.Component().WithComponent("PostgreSQLReaderJob")
+
 	// 检查配置模式：querySql 或 table/column 模式
 	if job.querySql != "" {
 		// querySql模式：直接使用用户提供的SQL查询
-		log.Printf("PostgreSQL Reader initialized with querySql mode")
+		compLogger.Info("Initialized with querySql mode")
 	} else {
 		// table/column模式：需要table和column配置
 		job.tables = conn.GetStringList("table")
@@ -81,13 +84,16 @@ func (job *PostgreSQLReaderJob) Init(config *config.Configuration) error {
 		if len(job.columns) == 0 {
 			return fmt.Errorf("column is required when querySql is not specified")
 		}
-		log.Printf("PostgreSQL Reader initialized with table/column mode: tables=%v, columns=%v", job.tables, job.columns)
+		compLogger.Info("Initialized with table/column mode",
+			zap.Strings("tables", job.tables),
+			zap.Strings("columns", job.columns))
 	}
 
 	return nil
 }
 
 func (job *PostgreSQLReaderJob) Split(adviceNumber int) ([]*config.Configuration, error) {
+	compLogger := logger.Component().WithComponent("PostgreSQLReaderJob")
 	taskConfigs := make([]*config.Configuration, 0)
 
 	// 如果使用querySql模式或没有设置splitPk，则不进行分片，使用单个任务
@@ -96,9 +102,9 @@ func (job *PostgreSQLReaderJob) Split(adviceNumber int) ([]*config.Configuration
 		taskConfig.Set("taskId", 0)
 		taskConfigs = append(taskConfigs, taskConfig)
 		if job.querySql != "" {
-			log.Printf("Using querySql mode, single task")
+			compLogger.Info("Using querySql mode, single task")
 		} else {
-			log.Printf("No splitPk specified, using single task")
+			compLogger.Info("No splitPk specified, using single task")
 		}
 		return taskConfigs, nil
 	}
@@ -106,7 +112,7 @@ func (job *PostgreSQLReaderJob) Split(adviceNumber int) ([]*config.Configuration
 	// 如果设置了splitPk，尝试进行分片
 	ranges, err := job.calculateSplitRanges(adviceNumber)
 	if err != nil {
-		log.Printf("Failed to calculate split ranges, fallback to single task: %v", err)
+		compLogger.Warn("Failed to calculate split ranges, fallback to single task", zap.Error(err))
 		taskConfig := job.config.Clone()
 		taskConfig.Set("taskId", 0)
 		taskConfigs = append(taskConfigs, taskConfig)
@@ -121,7 +127,9 @@ func (job *PostgreSQLReaderJob) Split(adviceNumber int) ([]*config.Configuration
 		taskConfigs = append(taskConfigs, taskConfig)
 	}
 
-	log.Printf("Split into %d tasks based on splitPk: %s", len(taskConfigs), job.splitPk)
+	compLogger.Info("Split tasks based on splitPk",
+		zap.Int("taskCount", len(taskConfigs)),
+		zap.String("splitPk", job.splitPk))
 	return taskConfigs, nil
 }
 
@@ -246,15 +254,17 @@ func (job *PostgreSQLReaderJob) calculateNumericSplitRanges(db *gorm.DB, adviceN
 
 // calculateTextSplitRanges 计算文本类型的分片范围
 func (job *PostgreSQLReaderJob) calculateTextSplitRanges(db *gorm.DB, adviceNumber int, columnType string) ([]map[string]interface{}, error) {
+	compLogger := logger.Component().WithComponent("PostgreSQLReaderJob")
+
 	// 策略1: 尝试字典序范围切分
 	ranges, err := job.calculateTextDictionarySplitRanges(db, adviceNumber)
 	if err != nil {
-		log.Printf("Dictionary-based splitting failed, trying offset-based splitting: %v", err)
+		compLogger.Debug("Dictionary-based splitting failed, trying offset-based splitting", zap.Error(err))
 
 		// 策略2: 使用OFFSET/LIMIT切分
 		ranges, err = job.calculateOffsetSplitRanges(db, adviceNumber)
 		if err != nil {
-			log.Printf("Offset-based splitting failed, falling back to hash-based splitting: %v", err)
+			compLogger.Debug("Offset-based splitting failed, falling back to hash-based splitting", zap.Error(err))
 			// 策略3: hash切分（兜底）
 			return job.calculateHashSplitRanges(adviceNumber), nil
 		}
@@ -309,9 +319,13 @@ func (job *PostgreSQLReaderJob) calculateTextDictionarySplitRanges(db *gorm.DB, 
 		return nil, fmt.Errorf("failed to get total count: %v", err)
 	}
 
+	compLogger := logger.Component().WithComponent("PostgreSQLReaderJob")
+
 	// 对于大数据集或者需要更多分片时，优先使用OFFSET切分确保均匀分布
 	if totalCount > int64(adviceNumber*2000) || adviceNumber > 4 {
-		log.Printf("Using offset-based splitting for better data distribution (totalCount=%d, channels=%d)", totalCount, adviceNumber)
+		compLogger.Info("Using offset-based splitting for better data distribution",
+			zap.Int64("totalCount", totalCount),
+			zap.Int("channels", adviceNumber))
 		return job.calculateOffsetSplitRanges(db, adviceNumber)
 	}
 
@@ -570,7 +584,7 @@ func (job *PostgreSQLReaderJob) connect() (*gorm.DB, error) {
 
 	// 连接数据库
 	db, err := gorm.Open(postgres.Open(dsn), &gorm.Config{
-		Logger: logger.Default.LogMode(logger.Silent),
+		Logger: gormLogger.Default.LogMode(gormLogger.Silent),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect to database: %v", err)
@@ -646,6 +660,8 @@ func (task *PostgreSQLReaderTask) Init(config *config.Configuration) error {
 }
 
 func (task *PostgreSQLReaderTask) StartRead(recordSender plugin.RecordSender) error {
+	compLogger := logger.Component().WithComponent("PostgreSQLReaderTask")
+
 	defer func() {
 		if sqlDB, err := task.db.DB(); err == nil {
 			sqlDB.Close()
@@ -658,7 +674,7 @@ func (task *PostgreSQLReaderTask) StartRead(recordSender plugin.RecordSender) er
 		return err
 	}
 
-	log.Printf("Executing query: %s", query)
+	compLogger.Info("Executing query", zap.String("query", query))
 
 	// 执行查询
 	rows, err := task.db.Raw(query).Rows()
@@ -702,11 +718,11 @@ func (task *PostgreSQLReaderTask) StartRead(recordSender plugin.RecordSender) er
 
 		recordCount++
 		if recordCount%1000 == 0 {
-			log.Printf("Read %d records", recordCount)
+			compLogger.Info("Progress update", zap.Int("recordsRead", recordCount))
 		}
 	}
 
-	log.Printf("Total records read: %d", recordCount)
+	compLogger.Info("Read task completed", zap.Int("totalRecords", recordCount))
 	return nil
 }
 

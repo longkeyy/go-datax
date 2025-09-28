@@ -1,6 +1,8 @@
 package plugin
 
 import (
+	"context"
+
 	"github.com/longkeyy/go-datax/common/config"
 	"github.com/longkeyy/go-datax/common/element"
 )
@@ -33,6 +35,12 @@ type ReaderTask interface {
 	Post() error
 }
 
+// ReaderTaskWithContext 支持Context取消的读取任务接口
+type ReaderTaskWithContext interface {
+	ReaderTask
+	StartReadWithContext(recordSender RecordSender, ctx context.Context) error
+}
+
 // Writer 接口定义写入插件
 type Writer interface {
 	Init(config *config.Configuration) error
@@ -53,6 +61,12 @@ type WriterTask interface {
 	StartWrite(recordReceiver RecordReceiver) error
 	Post() error
 	Prepare() error
+}
+
+// WriterTaskWithContext 支持Context取消的写入任务接口
+type WriterTaskWithContext interface {
+	WriterTask
+	StartWriteWithContext(recordReceiver RecordReceiver, ctx context.Context) error
 }
 
 // RecordSender 记录发送接口

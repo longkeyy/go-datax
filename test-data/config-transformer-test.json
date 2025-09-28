@@ -1,0 +1,44 @@
+{
+    "job": {
+        "setting": {
+            "speed": {
+                "channel": 1
+            }
+        },
+        "content": [
+            {
+                "reader": {
+                    "name": "streamreader",
+                    "parameter": {
+                        "column": [
+                            {
+                                "value": "1",
+                                "type": "long"
+                            },
+                            {
+                                "value": "test_data",
+                                "type": "string"
+                            }
+                        ],
+                        "sliceRecordCount": 10
+                    }
+                },
+                "transformer": [
+                    {
+                        "name": "dx_substr",
+                        "parameter": {
+                            "columnIndex": 1,
+                            "paras": ["0", "4"]
+                        }
+                    }
+                ],
+                "writer": {
+                    "name": "streamwriter",
+                    "parameter": {
+                        "print": true
+                    }
+                }
+            }
+        ]
+    }
+}

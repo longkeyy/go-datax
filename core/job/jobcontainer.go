@@ -2,12 +2,14 @@ package job
 
 import (
 	"fmt"
-	"github.com/longkeyy/go-datax/common/config"
-	"github.com/longkeyy/go-datax/common/plugin"
-	"github.com/longkeyy/go-datax/core/taskgroup"
-	"log"
 	"sync"
 	"time"
+
+	"github.com/longkeyy/go-datax/common/config"
+	"github.com/longkeyy/go-datax/common/logger"
+	"github.com/longkeyy/go-datax/common/plugin"
+	"github.com/longkeyy/go-datax/core/taskgroup"
+	"go.uber.org/zap"
 )
 
 // JobContainer 作业容器，负责作业的生命周期管理
@@ -25,14 +27,16 @@ func NewJobContainer(configuration *config.Configuration) *JobContainer {
 }
 
 func (jc *JobContainer) Start() error {
-	log.Println("DataX JobContainer starts job.")
+	appLogger := logger.App()
+	appLogger.Info("DataX JobContainer starts job")
 
 	startTime := time.Now()
 	var err error
 
 	defer func() {
 		endTime := time.Now()
-		log.Printf("Job completed in %v", endTime.Sub(startTime))
+		duration := endTime.Sub(startTime)
+		appLogger.Info("Job completed", zap.Duration("duration", duration))
 	}()
 
 	// 初始化
@@ -89,8 +93,11 @@ func (jc *JobContainer) init() error {
 		jc.needChannels = 1
 	}
 
-	log.Printf("Reader plugin: %s, Writer plugin: %s, Channels: %d",
-		jc.readerPlugin, jc.writerPlugin, jc.needChannels)
+	appLogger := logger.App()
+	appLogger.Info("Job configuration initialized",
+		zap.String("readerPlugin", jc.readerPlugin),
+		zap.String("writerPlugin", jc.writerPlugin),
+		zap.Int("channels", jc.needChannels))
 
 	return nil
 }
@@ -139,8 +146,10 @@ func (jc *JobContainer) split() ([]*config.Configuration, []*config.Configuratio
 		return nil, nil, fmt.Errorf("writer split failed: %v", err)
 	}
 
-	log.Printf("Split into %d reader tasks and %d writer tasks",
-		len(readerTaskConfigs), len(writerTaskConfigs))
+	appLogger := logger.App()
+	appLogger.Info("Task splitting completed",
+		zap.Int("readerTasks", len(readerTaskConfigs)),
+		zap.Int("writerTasks", len(writerTaskConfigs)))
 
 	return readerTaskConfigs, writerTaskConfigs, nil
 }
@@ -152,7 +161,8 @@ func (jc *JobContainer) schedule(readerTaskConfigs, writerTaskConfigs []*config.
 	}
 
 	taskCount := len(readerTaskConfigs)
-	log.Printf("Starting %d task groups", taskCount)
+	appLogger := logger.App()
+	appLogger.Info("Starting task groups", zap.Int("taskGroups", taskCount))
 
 	// 创建TaskGroup并发执行
 	var wg sync.WaitGroup

@@ -1,0 +1,47 @@
+{
+    "job": {
+        "setting": {
+            "speed": {
+                "channel": 2
+            }
+        },
+        "content": [
+            {
+                "reader": {
+                    "name": "postgresqlreader",
+                    "parameter": {
+                        "username": "postgres",
+                        "password": "postgres",
+                        "column": ["*"],
+                        "splitPk": "id",
+                        "connection": [
+                            {
+                                "jdbcUrl": ["jdbc:postgresql://localhost:5432/llm_datasets"],
+                                "table": ["users"]
+                            }
+                        ]
+                    }
+                },
+                "writer": {
+                    "name": "postgresqlwriter",
+                    "parameter": {
+                        "username": "postgres",
+                        "password": "postgres",
+                        "column": ["*"],
+                        "connection": [
+                            {
+                                "jdbcUrl": "jdbc:postgresql://localhost:5432/llm_datasets",
+                                "table": ["users_conflict_test"]
+                            }
+                        ],
+                        "preSql": [
+                            "DROP TABLE IF EXISTS users_conflict_test",
+                            "CREATE TABLE users_conflict_test AS SELECT * FROM users",
+                            "ALTER TABLE users_conflict_test ADD PRIMARY KEY (id)"
+                        ]
+                    }
+                }
+            }
+        ]
+    }
+}

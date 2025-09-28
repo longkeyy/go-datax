@@ -1,14 +1,17 @@
 package taskgroup
 
 import (
+	"context"
 	"fmt"
+	"sync"
+
 	"github.com/longkeyy/go-datax/common/config"
 	"github.com/longkeyy/go-datax/common/element"
+	"github.com/longkeyy/go-datax/common/logger"
 	"github.com/longkeyy/go-datax/common/plugin"
 	"github.com/longkeyy/go-datax/common/statistics"
 	"github.com/longkeyy/go-datax/common/transformer"
-	"log"
-	"sync"
+	"go.uber.org/zap"
 )
 
 // TaskGroupContainer 任务组容器
@@ -25,23 +28,45 @@ func NewTaskGroupContainer(configuration *config.Configuration, taskGroupId int)
 }
 
 func (tgc *TaskGroupContainer) Start(readerTaskConfig, writerTaskConfig *config.Configuration) error {
-	log.Printf("TaskGroup %d starts", tgc.taskGroupId)
+	// 创建带任务组上下文的日志器
+	taskLogger := logger.TaskGroupLogger(tgc.taskGroupId)
+	taskLogger.Info("TaskGroup starts", zap.Int("taskGroupId", tgc.taskGroupId))
 
-	// 暂时简化实现：使用普通Channel，Transformer功能在Writer中处理
+	// 创建可取消的context，用于任务间的协调取消
+	ctx, cancel := context.WithCancel(context.Background())
+	// 添加任务组信息到context中，用于子任务日志
+	ctx = logger.WithTaskGroupID(ctx, tgc.taskGroupId)
+	defer cancel()
+
 	// 动态计算缓冲区大小：基于任务预期数据量
 	bufferSize := tgc.calculateOptimalBufferSize(readerTaskConfig)
-	channel := plugin.NewChannel(bufferSize)
-	defer channel.Close()
 
-	// 创建RecordSender和RecordReceiver
-	recordSender := plugin.NewRecordSender(channel)
-	recordReceiver := plugin.NewRecordReceiver(channel)
+	// 构建Transformer执行器
+	transformerExecutions, err := tgc.buildTransformerExecutions()
+	if err != nil {
+		return fmt.Errorf("failed to build transformer executions: %v", err)
+	}
 
-	// TODO: 重新实现Transformer功能
-	// transformerExecutions, err := tgc.buildTransformerExecutions()
-	// if err != nil {
-	//     return fmt.Errorf("failed to build transformer executions: %v", err)
-	// }
+	// 创建通道和RecordSender/RecordReceiver
+	var recordSender plugin.RecordSender
+	var recordReceiver plugin.RecordReceiver
+	var transformerChannel *plugin.TransformerChannel
+
+	if len(transformerExecutions) > 0 {
+		// 如果有Transformer，使用TransformerChannel
+		taskLogger.Info("Creating TransformerChannel", zap.Int("transformerCount", len(transformerExecutions)))
+		transformerChannel = plugin.NewTransformerChannel(bufferSize, transformerExecutions)
+		defer transformerChannel.Close()
+		recordSender = plugin.NewTransformerRecordSender(transformerChannel)
+		recordReceiver = plugin.NewRecordReceiver(transformerChannel.DefaultChannel)
+	} else {
+		// 如果没有Transformer，使用普通Channel
+		taskLogger.Debug("Creating standard channel (no transformers)")
+		channel := plugin.NewChannel(bufferSize)
+		defer channel.Close()
+		recordSender = plugin.NewRecordSender(channel)
+		recordReceiver = plugin.NewRecordReceiver(channel)
+	}
 
 	// 创建Reader和Writer任务
 	readerTask, err := tgc.createReaderTask(readerTaskConfig)
@@ -68,58 +93,129 @@ func (tgc *TaskGroupContainer) Start(readerTaskConfig, writerTaskConfig *config.
 		return fmt.Errorf("writer task prepare failed: %v", err)
 	}
 
-	// 启动Reader和Writer
+	// 启动Reader和Writer（重要：先启动Writer再启动Reader，避免channel积压）
 	var wg sync.WaitGroup
 	errChan := make(chan error, 2)
+	writerReady := make(chan bool, 1)
 
-	// 启动Reader
+	// 先启动Writer（消费者）
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+
+		taskLogger.Debug("Writer goroutine started")
+
+		// 通知Writer已准备就绪
+		writerReady <- true
+		taskLogger.Debug("Writer ready signal sent")
+
+		taskLogger.Debug("Calling writerTask.StartWrite")
+
+		// 使用带Context的StartWrite接口（如果支持的话）
+		if writerWithContext, ok := writerTask.(plugin.WriterTaskWithContext); ok {
+			if err := writerWithContext.StartWriteWithContext(recordReceiver, ctx); err != nil {
+				if err != context.Canceled {
+					taskLogger.Error("Writer task failed", zap.Error(err))
+					cancel() // 立即通知Reader停止
+					errChan <- fmt.Errorf("writer task failed: %v", err)
+				}
+			} else {
+				taskLogger.Info("Writer task completed successfully")
+			}
+		} else {
+			// 回退到原始接口
+			if err := writerTask.StartWrite(recordReceiver); err != nil {
+				taskLogger.Error("Writer task failed", zap.Error(err))
+				cancel() // 立即通知Reader停止
+				errChan <- fmt.Errorf("writer task failed: %v", err)
+			} else {
+				taskLogger.Info("Writer task completed successfully")
+			}
+		}
+	}()
+
+	// 等待Writer准备就绪后再启动Reader（生产者）
+	<-writerReady
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
 		defer recordSender.Shutdown()
 
-		if err := readerTask.StartRead(recordSender); err != nil {
-			errChan <- fmt.Errorf("reader task failed: %v", err)
+		// 使用带Context的StartRead接口（如果支持的话）
+		if readerWithContext, ok := readerTask.(plugin.ReaderTaskWithContext); ok {
+			if err := readerWithContext.StartReadWithContext(recordSender, ctx); err != nil {
+				if err != context.Canceled {
+					taskLogger.Error("Reader task failed", zap.Error(err))
+					cancel() // 通知Writer停止
+					errChan <- fmt.Errorf("reader task failed: %v", err)
+				}
+			}
+		} else {
+			// 回退到原始接口
+			if err := readerTask.StartRead(recordSender); err != nil {
+				taskLogger.Error("Reader task failed", zap.Error(err))
+				cancel() // 通知Writer停止
+				errChan <- fmt.Errorf("reader task failed: %v", err)
+			}
 		}
 	}()
 
-	// 启动Writer
-	wg.Add(1)
+	// 等待任务完成或Context取消
+	done := make(chan struct{})
 	go func() {
-		defer wg.Done()
-
-		if err := writerTask.StartWrite(recordReceiver); err != nil {
-			errChan <- fmt.Errorf("writer task failed: %v", err)
-		}
+		wg.Wait()
+		close(done)
 	}()
 
-	wg.Wait()
-	close(errChan)
+	select {
+	case <-done:
+		// 正常完成
+		close(errChan)
 
-	// 检查错误
-	for err := range errChan {
-		return err
+		// 检查错误
+		for err := range errChan {
+			return err
+		}
+	case <-ctx.Done():
+		// Context取消，等待goroutine退出
+		taskLogger.Warn("Context cancelled, waiting for tasks to cleanup")
+		wg.Wait()
+		close(errChan)
+
+		// 检查是否有真实错误（非取消）
+		for err := range errChan {
+			if err.Error() != "context canceled" {
+				return err
+			}
+		}
+
+		return fmt.Errorf("tasks cancelled due to error in other task")
 	}
 
 	// 后处理
 	if err := readerTask.Post(); err != nil {
-		log.Printf("Reader post processing failed: %v", err)
+		taskLogger.Warn("Reader post processing failed", zap.Error(err))
 	}
 
 	if err := writerTask.Post(); err != nil {
-		log.Printf("Writer post processing failed: %v", err)
+		taskLogger.Warn("Writer post processing failed", zap.Error(err))
 	}
 
 	// 销毁资源
 	if err := readerTask.Destroy(); err != nil {
-		log.Printf("Reader destroy failed: %v", err)
+		taskLogger.Warn("Reader destroy failed", zap.Error(err))
 	}
 
 	if err := writerTask.Destroy(); err != nil {
-		log.Printf("Writer destroy failed: %v", err)
+		taskLogger.Warn("Writer destroy failed", zap.Error(err))
 	}
 
-	log.Printf("TaskGroup %d completed", tgc.taskGroupId)
+	// 记录Transformer统计信息
+	if transformerChannel != nil {
+		tgc.logTransformerStatistics(transformerChannel)
+	}
+
+	taskLogger.Info("TaskGroup completed")
 	return nil
 }
 
@@ -135,6 +231,7 @@ func (tgc *TaskGroupContainer) createWriterTask(writerConfig *config.Configurati
 
 // calculateOptimalBufferSize 计算最优的通道缓冲区大小
 func (tgc *TaskGroupContainer) calculateOptimalBufferSize(readerConfig *config.Configuration) int {
+	taskLogger := logger.TaskGroupLogger(tgc.taskGroupId)
 	// 检查是否有splitRange配置，如果有，说明是大数据集的分片任务
 	if splitRange := readerConfig.Get("parameter.splitRange"); splitRange != nil {
 		if rangeMap, ok := splitRange.(map[string]interface{}); ok {
@@ -150,8 +247,10 @@ func (tgc *TaskGroupContainer) calculateOptimalBufferSize(readerConfig *config.C
 						} else if bufferSize > 200000 {
 							bufferSize = 200000
 						}
-						log.Printf("TaskGroup %d: Dynamic buffer size %d for offset split (limit=%d)",
-							tgc.taskGroupId, bufferSize, limitInt)
+						taskLogger.Info("Dynamic buffer size calculated",
+							zap.Int("bufferSize", bufferSize),
+							zap.Int64("splitLimit", limitInt),
+							zap.String("splitType", "offset"))
 						return bufferSize
 					}
 				}
@@ -161,7 +260,7 @@ func (tgc *TaskGroupContainer) calculateOptimalBufferSize(readerConfig *config.C
 
 	// 默认缓冲区大小
 	defaultSize := 10000
-	log.Printf("TaskGroup %d: Using default buffer size %d", tgc.taskGroupId, defaultSize)
+	taskLogger.Info("Using default buffer size", zap.Int("bufferSize", defaultSize))
 	return defaultSize
 }
 
@@ -222,7 +321,8 @@ func (m *MockWriterTask) StartWrite(recordReceiver plugin.RecordReceiver) error 
 			return err
 		}
 
-		log.Printf("Writing record: %s", record.String())
+		// 使用component级别日志，因为这是Mock组件
+		logger.Component().WithComponent("MockWriter").Debug("Writing record", zap.String("record", record.String()))
 	}
 	return nil
 }
@@ -249,7 +349,8 @@ func (tgc *TaskGroupContainer) buildTransformerExecutions() ([]*transformer.Tran
 		return nil, nil
 	}
 
-	log.Printf("Building %d transformer executions", len(transformerConfigs))
+	taskLogger := logger.TaskGroupLogger(tgc.taskGroupId)
+	taskLogger.Info("Building transformer executions", zap.Int("count", len(transformerConfigs)))
 
 	executions, err := transformer.BuildTransformerExecutions(transformerConfigs)
 	if err != nil {
@@ -258,7 +359,7 @@ func (tgc *TaskGroupContainer) buildTransformerExecutions() ([]*transformer.Tran
 
 	// 记录加载的Transformer
 	for _, execution := range executions {
-		log.Printf("Loaded transformer: %s", execution.GetTransformerName())
+		taskLogger.Info("Loaded transformer", zap.String("name", execution.GetTransformerName()))
 	}
 
 	return executions, nil
@@ -271,16 +372,20 @@ func (tgc *TaskGroupContainer) logTransformerStatistics(transformerChannel *plug
 		return
 	}
 
-	log.Printf("TaskGroup %d Transformer Statistics:", tgc.taskGroupId)
+	taskLogger := logger.TaskGroupLogger(tgc.taskGroupId)
+	taskLogger.Info("Transformer Statistics")
 	for name, stat := range stats {
-		log.Printf("  %s: success=%d, failed=%d, filtered=%d",
-			name, stat["success"], stat["failed"], stat["filter"])
+		taskLogger.Info("Transformer performance",
+			zap.String("name", name),
+			zap.Int64("success", stat["success"]),
+			zap.Int64("failed", stat["failed"]),
+			zap.Int64("filtered", stat["filter"]))
 	}
 }
 
 // logErrorStatistics 记录错误统计信息
 func (tgc *TaskGroupContainer) logErrorStatistics(errorLimiter *statistics.ErrorLimiter) {
 	stats := errorLimiter.GetStatistics()
-	log.Printf("TaskGroup %d Job Statistics: %s", tgc.taskGroupId, stats.String())
+	taskLogger := logger.TaskGroupLogger(tgc.taskGroupId)
+	taskLogger.Info("Job Statistics", zap.String("stats", stats.String()))
 }
-

@@ -2,9 +2,10 @@ package plugin
 
 import (
 	"github.com/longkeyy/go-datax/common/element"
+	"github.com/longkeyy/go-datax/common/logger"
 	"github.com/longkeyy/go-datax/common/statistics"
 	"github.com/longkeyy/go-datax/common/transformer"
-	"log"
+	"go.uber.org/zap"
 )
 
 // TransformerChannel 支持Transformer的通道
@@ -52,12 +53,14 @@ func (tc *TransformerChannel) Push(record element.Record) error {
 	for _, transformerExecution := range tc.transformers {
 		transformedRecord, err = transformerExecution.Execute(transformedRecord)
 		if err != nil {
-			log.Printf("Transformer %s execution failed: %v", transformerExecution.GetTransformerName(), err)
+			logger.Component().WithComponent("TransformerChannel").Error("Transformer execution failed",
+				zap.String("transformer", transformerExecution.GetTransformerName()),
+				zap.Error(err))
 
 			// 统计错误并检查是否超过限制
 			if tc.errorLimiter != nil {
 				if limitErr := tc.errorLimiter.AddErrorRecord(1); limitErr != nil {
-					log.Printf("Error limit exceeded: %v", limitErr)
+					logger.Component().WithComponent("TransformerChannel").Error("Error limit exceeded", zap.Error(limitErr))
 					return limitErr
 				}
 			}
@@ -67,7 +70,8 @@ func (tc *TransformerChannel) Push(record element.Record) error {
 
 		// 如果转换器返回nil，表示记录被过滤掉
 		if transformedRecord == nil {
-			log.Printf("Record filtered by transformer: %s", transformerExecution.GetTransformerName())
+			logger.Component().WithComponent("TransformerChannel").Debug("Record filtered by transformer",
+				zap.String("transformer", transformerExecution.GetTransformerName()))
 
 			// 统计过滤记录数
 			if tc.errorLimiter != nil {

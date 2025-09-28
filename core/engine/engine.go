@@ -3,10 +3,12 @@ package engine
 import (
 	"flag"
 	"fmt"
-	"github.com/longkeyy/go-datax/common/config"
-	"github.com/longkeyy/go-datax/core/job"
-	"log"
 	"os"
+
+	"github.com/longkeyy/go-datax/common/config"
+	"github.com/longkeyy/go-datax/common/logger"
+	"github.com/longkeyy/go-datax/core/job"
+	"go.uber.org/zap"
 )
 
 // Engine DataX引擎入口类
@@ -61,8 +63,9 @@ func (e *Engine) Entry(args []string) error {
 	}
 
 	// 打印配置信息（过滤敏感信息）
+	appLogger := logger.App()
 	if jsonStr, err := configuration.ToJSON(); err == nil {
-		log.Printf("Job configuration:\n%s", jsonStr)
+		appLogger.Debug("Job configuration loaded", zap.String("config", jsonStr))
 	}
 
 	// 启动引擎
@@ -70,21 +73,44 @@ func (e *Engine) Entry(args []string) error {
 }
 
 func Main() {
+	// 初始化zap日志器
+	logConfig := &logger.LoggerConfig{
+		Level:       logger.LevelInfo,
+		Development: true,
+		Console:     true,
+	}
+
+	if err := logger.Initialize(logConfig); err != nil {
+		fmt.Fprintf(os.Stderr, "Failed to initialize logger: %v\n", err)
+		os.Exit(1)
+	}
+	defer logger.Sync()
+
+	// 使用应用级日志器
+	appLogger := logger.App()
+	appLogger.Info("DataX Go starting",
+		zap.String("version", "1.0.0"),
+		zap.String("build", "dev"))
+
 	var jobPath string
 	flag.StringVar(&jobPath, "job", "", "Job configuration file path")
 	flag.Parse()
 
 	if jobPath == "" {
-		log.Fatal("job configuration file path is required, use -job <path>")
+		appLogger.Error("Job configuration file path is required")
+		fmt.Println("Usage: datax -job <config-file>")
+		os.Exit(1)
 	}
+
+	appLogger.Info("Starting DataX execution", zap.String("jobPath", jobPath))
 
 	engine := NewEngine()
 	args := []string{"-job", jobPath}
 
 	if err := engine.Entry(args); err != nil {
-		log.Fatalf("DataX execution failed: %v", err)
+		appLogger.Error("DataX execution failed", zap.Error(err))
 		os.Exit(1)
 	}
 
-	log.Println("DataX execution completed successfully")
+	appLogger.Info("DataX execution completed successfully")
 }

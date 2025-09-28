@@ -1,0 +1,44 @@
+{
+  "job": {
+    "setting": {
+      "speed": {
+        "channel": 1
+      }
+    },
+    "content": [
+      {
+        "reader": {
+          "name": "postgresqlreader",
+          "parameter": {
+            "username": "postgres",
+            "password": "Passw0rd*liuliuliu",
+            "column": ["*"],
+            "splitPk": "id",
+            "connection": [
+              {
+                "jdbcUrl": ["jdbc:postgresql://192.168.110.10:5433/sd1688"],
+                "table": ["dwd_llm_result"]
+              }
+            ]
+          }
+        },
+        "writer": {
+          "name": "postgresqlwriter",
+          "parameter": {
+            "username": "postgres",
+            "password": "Passw0rd*liuliuliu",
+            "column": ["*"],
+            "connection": [
+              {
+                "jdbcUrl": "jdbc:postgresql://192.168.110.11:5433/sd1688",
+                "table": ["dwd_llm_result"]
+              }
+            ],
+            "preSql": [
+            ]
+          }
+        }
+      }
+    ]
+  }
+}
