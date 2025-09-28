@@ -6,12 +6,13 @@ import (
 	"sync"
 	"time"
 
+	"github.com/longkeyy/go-datax/api/plugin"
 	"github.com/longkeyy/go-datax/common/config"
-	"github.com/longkeyy/go-datax/common/element"
 	"github.com/longkeyy/go-datax/common/logger"
-	"github.com/longkeyy/go-datax/common/plugin"
 	"github.com/longkeyy/go-datax/common/statistics"
-	"github.com/longkeyy/go-datax/common/transformer"
+	coreconfig "github.com/longkeyy/go-datax/core/config"
+	corelement "github.com/longkeyy/go-datax/core/element"
+	coreplugin "github.com/longkeyy/go-datax/core/plugin"
 	"go.uber.org/zap"
 )
 
@@ -55,36 +56,29 @@ func (tgc *TaskGroupContainer) Start(readerTaskConfig, writerTaskConfig *config.
 	// 动态计算缓冲区大小：基于任务预期数据量
 	bufferSize := tgc.calculateOptimalBufferSize(readerTaskConfig)
 
-	// 构建Transformer执行器
-	transformerExecutions, err := tgc.buildTransformerExecutions()
-	if err != nil {
-		return fmt.Errorf("failed to build transformer executions: %v", err)
-	}
+	// TODO: Transformer功能暂时移除，等待未来重新实现
+	// transformerExecutions, err := tgc.buildTransformerExecutions()
+	// if err != nil {
+	//	return fmt.Errorf("failed to build transformer executions: %v", err)
+	// }
 
 	// 创建通道和RecordSender/RecordReceiver
 	var recordSender plugin.RecordSender
 	var recordReceiver plugin.RecordReceiver
-	var transformerChannel *plugin.TransformerChannel
 
-	if len(transformerExecutions) > 0 {
-		// 如果有Transformer，使用TransformerChannel
-		taskLogger.Info("Creating TransformerChannel", zap.Int("transformerCount", len(transformerExecutions)))
-		transformerChannel = plugin.NewTransformerChannel(bufferSize, transformerExecutions)
-		defer transformerChannel.Close()
-		baseSender := plugin.NewTransformerRecordSender(transformerChannel)
-		baseReceiver := plugin.NewRecordReceiver(transformerChannel.DefaultChannel)
-		recordSender = plugin.NewStatisticsRecordSender(baseSender, tgc.communication, tgc.taskGroupId)
-		recordReceiver = plugin.NewStatisticsRecordReceiver(baseReceiver, tgc.communication, tgc.taskGroupId)
-	} else {
-		// 如果没有Transformer，使用普通Channel
-		taskLogger.Debug("Creating standard channel (no transformers)")
-		channel := plugin.NewChannel(bufferSize)
-		defer channel.Close()
-		baseSender := plugin.NewRecordSender(channel)
-		baseReceiver := plugin.NewRecordReceiver(channel)
-		recordSender = plugin.NewStatisticsRecordSender(baseSender, tgc.communication, tgc.taskGroupId)
-		recordReceiver = plugin.NewStatisticsRecordReceiver(baseReceiver, tgc.communication, tgc.taskGroupId)
-	}
+	// TODO: Transformer功能已移除，等待未来重新实现
+	// if len(transformerExecutions) > 0 {
+	//	taskLogger.Warn("Transformers temporarily disabled due to API migration", zap.Int("skippedTransformers", len(transformerExecutions)))
+	// }
+
+	// 创建普通Channel
+	taskLogger.Debug("Creating standard channel")
+	channel := coreplugin.NewChannel(bufferSize)
+	defer channel.Close()
+	baseSender := coreplugin.NewRecordSender(channel)
+	baseReceiver := coreplugin.NewRecordReceiver(channel)
+	recordSender = coreplugin.NewStatisticsRecordSender(baseSender, tgc.communication, tgc.taskGroupId)
+	recordReceiver = coreplugin.NewStatisticsRecordReceiver(baseReceiver, tgc.communication, tgc.taskGroupId)
 
 	// 创建Reader和Writer任务
 	readerTask, err := tgc.createReaderTask(readerTaskConfig)
@@ -97,12 +91,14 @@ func (tgc *TaskGroupContainer) Start(readerTaskConfig, writerTaskConfig *config.
 		return fmt.Errorf("failed to create writer task: %v", err)
 	}
 
-	// 初始化任务
-	if err := readerTask.Init(readerTaskConfig); err != nil {
+	// 初始化任务 - 使用适配器转换配置类型
+	readerConfigAdapter := coreconfig.NewConfigurationAdapter(readerTaskConfig)
+	if err := readerTask.Init(readerConfigAdapter); err != nil {
 		return fmt.Errorf("reader task init failed: %v", err)
 	}
 
-	if err := writerTask.Init(writerTaskConfig); err != nil {
+	writerConfigAdapter := coreconfig.NewConfigurationAdapter(writerTaskConfig)
+	if err := writerTask.Init(writerConfigAdapter); err != nil {
 		return fmt.Errorf("writer task init failed: %v", err)
 	}
 
@@ -228,10 +224,10 @@ func (tgc *TaskGroupContainer) Start(readerTaskConfig, writerTaskConfig *config.
 		taskLogger.Warn("Writer destroy failed", zap.Error(err))
 	}
 
-	// 记录Transformer统计信息
-	if transformerChannel != nil {
-		tgc.logTransformerStatistics(transformerChannel)
-	}
+	// TODO: 记录Transformer统计信息 - 暂时跳过
+	// if transformerChannel != nil {
+	//	tgc.logTransformerStatistics(transformerChannel)
+	// }
 
 	// 计算并记录最终统计信息
 	endTime := time.Now()
@@ -251,12 +247,20 @@ func (tgc *TaskGroupContainer) Start(readerTaskConfig, writerTaskConfig *config.
 
 func (tgc *TaskGroupContainer) createReaderTask(readerConfig *config.Configuration) (plugin.ReaderTask, error) {
 	readerName := readerConfig.GetString("name")
-	return plugin.CreateReaderTask(readerName)
+	readerTaskFactory, err := coreplugin.GetReaderTaskFactory(readerName)
+	if err != nil {
+		return nil, err
+	}
+	return readerTaskFactory.CreateReaderTask(), nil
 }
 
 func (tgc *TaskGroupContainer) createWriterTask(writerConfig *config.Configuration) (plugin.WriterTask, error) {
 	writerName := writerConfig.GetString("name")
-	return plugin.CreateWriterTask(writerName)
+	writerTaskFactory, err := coreplugin.GetWriterTaskFactory(writerName)
+	if err != nil {
+		return nil, err
+	}
+	return writerTaskFactory.CreateWriterTask(), nil
 }
 
 // calculateOptimalBufferSize 计算最优的通道缓冲区大小
@@ -307,9 +311,9 @@ func (m *MockReaderTask) Init(config *config.Configuration) error {
 func (m *MockReaderTask) StartRead(recordSender plugin.RecordSender) error {
 	// 模拟读取数据并发送
 	for i := 0; i < 10; i++ {
-		record := element.NewRecord()
-		record.AddColumn(element.NewLongColumn(int64(i)))
-		record.AddColumn(element.NewStringColumn(fmt.Sprintf("test_data_%d", i)))
+		record := corelement.NewRecord()
+		record.AddColumn(corelement.NewLongColumn(int64(i)))
+		record.AddColumn(corelement.NewStringColumn(fmt.Sprintf("test_data_%d", i)))
 
 		if err := recordSender.SendRecord(record); err != nil {
 			return err
@@ -345,7 +349,7 @@ func (m *MockWriterTask) StartWrite(recordReceiver plugin.RecordReceiver) error 
 	for {
 		record, err := recordReceiver.GetFromReader()
 		if err != nil {
-			if err == plugin.ErrChannelClosed {
+			if err == coreplugin.ErrChannelClosed {
 				break
 			}
 			return err
@@ -365,53 +369,53 @@ func (m *MockWriterTask) Destroy() error {
 	return nil
 }
 
-// buildTransformerExecutions 从全局配置构建Transformer执行器
-func (tgc *TaskGroupContainer) buildTransformerExecutions() ([]*transformer.TransformerExecution, error) {
-	// 从job.content[0].transformer读取配置
-	contentList := tgc.configuration.GetListConfiguration("job.content")
-	if len(contentList) == 0 {
-		return nil, nil
-	}
+// TODO: buildTransformerExecutions 函数已移除，等待Transformer功能重新实现
+// func (tgc *TaskGroupContainer) buildTransformerExecutions() ([]*transformer.TransformerExecution, error) {
+//	// 从job.content[0].transformer读取配置
+//	contentList := tgc.configuration.GetListConfiguration("job.content")
+//	if len(contentList) == 0 {
+//		return nil, nil
+//	}
+//
+//	content := contentList[0]
+//	transformerConfigs := content.GetListConfiguration("transformer")
+//	if len(transformerConfigs) == 0 {
+//		return nil, nil
+//	}
+//
+//	taskLogger := logger.TaskGroupLogger(tgc.taskGroupId)
+//	taskLogger.Info("Building transformer executions", zap.Int("count", len(transformerConfigs)))
+//
+//	executions, err := transformer.BuildTransformerExecutions(transformerConfigs)
+//	if err != nil {
+//		return nil, err
+//	}
+//
+//	// 记录加载的Transformer
+//	for _, execution := range executions {
+//		taskLogger.Info("Loaded transformer", zap.String("name", execution.GetTransformerName()))
+//	}
+//
+//	return executions, nil
+// }
 
-	content := contentList[0]
-	transformerConfigs := content.GetListConfiguration("transformer")
-	if len(transformerConfigs) == 0 {
-		return nil, nil
-	}
-
-	taskLogger := logger.TaskGroupLogger(tgc.taskGroupId)
-	taskLogger.Info("Building transformer executions", zap.Int("count", len(transformerConfigs)))
-
-	executions, err := transformer.BuildTransformerExecutions(transformerConfigs)
-	if err != nil {
-		return nil, err
-	}
-
-	// 记录加载的Transformer
-	for _, execution := range executions {
-		taskLogger.Info("Loaded transformer", zap.String("name", execution.GetTransformerName()))
-	}
-
-	return executions, nil
-}
-
-// logTransformerStatistics 记录Transformer统计信息
-func (tgc *TaskGroupContainer) logTransformerStatistics(transformerChannel *plugin.TransformerChannel) {
-	stats := transformerChannel.GetTransformerStatistics()
-	if len(stats) == 0 {
-		return
-	}
-
-	taskLogger := logger.TaskGroupLogger(tgc.taskGroupId)
-	taskLogger.Info("Transformer Statistics")
-	for name, stat := range stats {
-		taskLogger.Info("Transformer performance",
-			zap.String("name", name),
-			zap.Int64("success", stat["success"]),
-			zap.Int64("failed", stat["failed"]),
-			zap.Int64("filtered", stat["filter"]))
-	}
-}
+// logTransformerStatistics 记录Transformer统计信息 - 暂时禁用
+// func (tgc *TaskGroupContainer) logTransformerStatistics(transformerChannel *plugin.TransformerChannel) {
+//	stats := transformerChannel.GetTransformerStatistics()
+//	if len(stats) == 0 {
+//		return
+//	}
+//
+//	taskLogger := logger.TaskGroupLogger(tgc.taskGroupId)
+//	taskLogger.Info("Transformer Statistics")
+//	for name, stat := range stats {
+//		taskLogger.Info("Transformer performance",
+//			zap.String("name", name),
+//			zap.Int64("success", stat["success"]),
+//			zap.Int64("failed", stat["failed"]),
+//			zap.Int64("filtered", stat["filter"]))
+//	}
+// }
 
 // logErrorStatistics 记录错误统计信息
 func (tgc *TaskGroupContainer) logErrorStatistics(errorLimiter *statistics.ErrorLimiter) {
