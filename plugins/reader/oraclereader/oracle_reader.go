@@ -1,159 +1,178 @@
 package oraclereader
 
 import (
-	"context"
 	"database/sql"
 	"fmt"
 	"strconv"
 	"strings"
 	"time"
 
-	// "github.com/godror/godror"
 	"github.com/longkeyy/go-datax/common/config"
 	"github.com/longkeyy/go-datax/common/element"
+	"github.com/longkeyy/go-datax/common/logger"
 	"github.com/longkeyy/go-datax/common/plugin"
+	"github.com/longkeyy/go-datax/common/rdbms/writer"
+	"go.uber.org/zap"
 
-	// _ "github.com/godror/godror"
+	// 使用go-ora纯Go驱动，无需Oracle客户端库
+	_ "github.com/sijms/go-ora/v2"
 )
 
-type OracleReaderJob struct {
-	*plugin.BaseJob
-	conf *config.Configuration
-}
+const (
+	DefaultBatchSize = 1024
+	DefaultFetchSize = 1024
+)
 
-type OracleReaderTask struct {
-	*plugin.BaseTask
-	conf *config.Configuration
-	db   *sql.DB
+// OracleReaderJob Oracle读取作业
+type OracleReaderJob struct {
+	config   *config.Configuration
+	username string
+	password string
+	jdbcUrl  string
+	tables   []string
+	columns  []string
+	splitPk  string
+	where    string
+	querySql string
+	session  []string
+	hint     string
 }
 
 func NewOracleReaderJob() *OracleReaderJob {
-	job := &OracleReaderJob{
-		BaseJob: plugin.NewBaseJob(),
+	return &OracleReaderJob{}
+}
+
+func (job *OracleReaderJob) Init(config *config.Configuration) error {
+	job.config = config
+	compLogger := logger.Component().WithComponent("OracleReaderJob")
+
+	// 获取数据库连接参数
+	job.username = config.GetString("parameter.username")
+	job.password = config.GetString("parameter.password")
+
+	if job.username == "" || job.password == "" {
+		return fmt.Errorf("username and password are required")
 	}
-	return job
-}
 
-func NewOracleReaderTask() *OracleReaderTask {
-	task := &OracleReaderTask{
-		BaseTask: plugin.NewBaseTask(),
-	}
-	return task
-}
-
-func (job *OracleReaderJob) Init(ctx context.Context) error {
-	job.conf = job.GetPluginJobConf()
-	return job.validateConfig()
-}
-
-func (job *OracleReaderJob) validateConfig() error {
-	connections := job.conf.GetSliceConfiguration("connection")
+	// 获取连接信息
+	connections := config.GetListConfiguration("parameter.connection")
 	if len(connections) == 0 {
-		return fmt.Errorf("connection配置不能为空")
+		return fmt.Errorf("connection configuration is required")
 	}
 
-	for _, connConf := range connections {
-		jdbcUrls := connConf.GetStringSlice("jdbcUrl")
-		tables := connConf.GetStringSlice("table")
+	// 处理第一个连接配置
+	conn := connections[0]
+	job.jdbcUrl = conn.GetString("jdbcUrl")
+	job.tables = conn.GetStringList("table")
 
-		if len(jdbcUrls) == 0 {
-			return fmt.Errorf("jdbcUrl配置不能为空")
-		}
-		if len(tables) == 0 {
-			return fmt.Errorf("table配置不能为空")
-		}
+	if job.jdbcUrl == "" || len(job.tables) == 0 {
+		return fmt.Errorf("jdbcUrl and table are required")
 	}
 
-	username := job.conf.GetString("username")
-	password := job.conf.GetString("password")
-	if username == "" || password == "" {
-		return fmt.Errorf("username和password配置不能为空")
+	// 获取列信息
+	job.columns = config.GetStringList("parameter.column")
+	if len(job.columns) == 0 {
+		return fmt.Errorf("column configuration is required")
 	}
 
-	columns := job.conf.GetStringSlice("column")
-	if len(columns) == 0 {
-		return fmt.Errorf("column配置不能为空")
+	// 获取可选参数
+	job.splitPk = config.GetString("parameter.splitPk")
+	job.where = config.GetString("parameter.where")
+	job.querySql = config.GetString("parameter.querySql")
+	job.session = config.GetStringList("parameter.session")
+	job.hint = config.GetString("parameter.hint")
+
+	// 执行预处理
+	err := writer.DoPretreatment(config, writer.Oracle)
+	if err != nil {
+		return fmt.Errorf("pretreatment failed: %v", err)
 	}
 
+	compLogger.Info("OracleReader initialized",
+		zap.String("jdbcUrl", job.jdbcUrl),
+		zap.Strings("tables", job.tables),
+		zap.Int("columns", len(job.columns)))
 	return nil
 }
 
-func (job *OracleReaderJob) Destroy(ctx context.Context) error {
+func (job *OracleReaderJob) Prepare() error {
 	return nil
 }
 
-func (job *OracleReaderJob) Split(ctx context.Context, adviceNumber int) ([]*config.Configuration, error) {
-	var taskConfigs []*config.Configuration
+func (job *OracleReaderJob) Split(adviceNumber int) ([]*config.Configuration, error) {
+	taskConfigs := make([]*config.Configuration, 0)
+	compLogger := logger.Component().WithComponent("OracleReaderJob")
 
-	connections := job.conf.GetSliceConfiguration("connection")
+	for _, table := range job.tables {
+		if job.splitPk != "" && adviceNumber > 1 {
+			// 基于splitPk进行分片
+			ranges, err := job.calculateSplitRanges(table, adviceNumber)
+			if err != nil {
+				compLogger.Warn("Failed to calculate split ranges, fallback to single task", zap.Error(err))
+				taskConfig := job.config.Clone()
+				taskConfig.Set("taskId", 0)
+				taskConfig.Set("parameter.table", table)
+				taskConfigs = append(taskConfigs, taskConfig)
+			} else {
+				for i, rangeCondition := range ranges {
+					taskConfig := job.config.Clone()
+					taskConfig.Set("taskId", i)
+					taskConfig.Set("parameter.table", table)
 
-	for _, connConf := range connections {
-		jdbcUrls := connConf.GetStringSlice("jdbcUrl")
-		tables := connConf.GetStringSlice("table")
-
-		splitPk := job.conf.GetString("splitPk")
-
-		for _, table := range tables {
-			for _, jdbcUrl := range jdbcUrls {
-				if splitPk != "" && adviceNumber > 1 {
-					splits, err := job.splitByPk(jdbcUrl, table, splitPk, adviceNumber)
-					if err != nil {
-						return nil, fmt.Errorf("split by primary key failed: %v", err)
+					// 合并where条件
+					whereCondition := job.where
+					if whereCondition != "" && rangeCondition != "" {
+						whereCondition = fmt.Sprintf("(%s) AND (%s)", whereCondition, rangeCondition)
+					} else if rangeCondition != "" {
+						whereCondition = rangeCondition
 					}
-
-					for _, splitCondition := range splits {
-						taskConfig := job.conf.Clone()
-						newConnection := map[string]interface{}{
-							"jdbcUrl": []string{jdbcUrl},
-							"table":   []string{table},
-						}
-						taskConfig.Set("connection", []interface{}{newConnection})
-
-						whereCondition := job.conf.GetString("where")
-						if whereCondition != "" {
-							whereCondition = fmt.Sprintf("(%s) AND (%s)", whereCondition, splitCondition)
-						} else {
-							whereCondition = splitCondition
-						}
-						taskConfig.Set("where", whereCondition)
-
-						taskConfigs = append(taskConfigs, taskConfig)
-					}
-				} else {
-					taskConfig := job.conf.Clone()
-					newConnection := map[string]interface{}{
-						"jdbcUrl": []string{jdbcUrl},
-						"table":   []string{table},
-					}
-					taskConfig.Set("connection", []interface{}{newConnection})
+					taskConfig.Set("parameter.where", whereCondition)
 					taskConfigs = append(taskConfigs, taskConfig)
 				}
 			}
+		} else {
+			// 不进行分片
+			taskConfig := job.config.Clone()
+			taskConfig.Set("taskId", 0)
+			taskConfig.Set("parameter.table", table)
+			taskConfigs = append(taskConfigs, taskConfig)
 		}
 	}
 
+	compLogger.Info("Split tasks completed",
+		zap.Int("taskCount", len(taskConfigs)),
+		zap.String("splitPk", job.splitPk))
 	return taskConfigs, nil
 }
 
-func (job *OracleReaderJob) splitByPk(jdbcUrl, table, splitPk string, adviceNumber int) ([]string, error) {
-	db, err := job.openConnection(jdbcUrl)
+func (job *OracleReaderJob) calculateSplitRanges(table string, adviceNumber int) ([]string, error) {
+	db, err := job.connect()
 	if err != nil {
 		return nil, err
 	}
 	defer db.Close()
 
-	minMaxQuery := fmt.Sprintf("SELECT MIN(%s), MAX(%s) FROM %s", splitPk, splitPk, table)
-	row := db.QueryRow(minMaxQuery)
+	// 查询splitPk的最小值和最大值
+	minMaxQuery := fmt.Sprintf("SELECT MIN(%s), MAX(%s) FROM %s", job.splitPk, job.splitPk, table)
+	if job.where != "" {
+		minMaxQuery += " WHERE " + job.where
+	}
 
+	row := db.QueryRow(minMaxQuery)
 	var minVal, maxVal interface{}
 	if err := row.Scan(&minVal, &maxVal); err != nil {
 		return nil, err
 	}
 
 	if minVal == nil || maxVal == nil {
-		return []string{}, nil
+		return []string{""}, nil // 返回空的分片条件
 	}
 
+	// 根据数据类型进行分片
+	return job.generateSplitConditions(minVal, maxVal, adviceNumber)
+}
+
+func (job *OracleReaderJob) generateSplitConditions(minVal, maxVal interface{}, adviceNumber int) ([]string, error) {
 	var conditions []string
 
 	switch v := minVal.(type) {
@@ -174,212 +193,275 @@ func (job *OracleReaderJob) splitByPk(jdbcUrl, table, splitPk string, adviceNumb
 				end = start + step - 1
 			}
 
-			condition := fmt.Sprintf("%s >= %d AND %s <= %d", splitPk, start, splitPk, end)
+			condition := fmt.Sprintf("%s >= %d AND %s <= %d", job.splitPk, start, job.splitPk, end)
+			conditions = append(conditions, condition)
+		}
+	case float64:
+		minFloat := v
+		maxFloat := maxVal.(float64)
+		step := (maxFloat - minFloat) / float64(adviceNumber)
+
+		for i := 0; i < adviceNumber; i++ {
+			start := minFloat + float64(i)*step
+			var end float64
+			if i == adviceNumber-1 {
+				end = maxFloat
+			} else {
+				end = start + step
+			}
+
+			condition := fmt.Sprintf("%s >= %f AND %s < %f", job.splitPk, start, job.splitPk, end)
 			conditions = append(conditions, condition)
 		}
 	case string:
-		conditions = append(conditions, fmt.Sprintf("%s >= '%s' AND %s <= '%s'", splitPk, v, splitPk, maxVal.(string)))
+		// 对于字符串类型，简单使用范围查询
+		minStr := v
+		maxStr := maxVal.(string)
+		condition := fmt.Sprintf("%s >= '%s' AND %s <= '%s'", job.splitPk, minStr, job.splitPk, maxStr)
+		conditions = append(conditions, condition)
 	default:
+		// 不支持的类型，返回单个空条件
 		return []string{""}, nil
 	}
 
 	return conditions, nil
 }
 
-func (job *OracleReaderJob) openConnection(jdbcUrl string) (*sql.DB, error) {
-	dsn, err := job.parseConnectionString(jdbcUrl)
+func (job *OracleReaderJob) connect() (*sql.DB, error) {
+	dsn, err := job.parseJdbcUrl()
 	if err != nil {
 		return nil, err
 	}
 
-	db, err := sql.Open("godror", dsn)
+	db, err := sql.Open("oracle", dsn)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to open Oracle connection: %v", err)
 	}
 
 	if err := db.Ping(); err != nil {
 		db.Close()
-		return nil, err
+		return nil, fmt.Errorf("failed to ping Oracle: %v", err)
 	}
 
 	return db, nil
 }
 
-func (job *OracleReaderJob) parseConnectionString(jdbcUrl string) (string, error) {
-	if !strings.HasPrefix(jdbcUrl, "oracle://") {
-		return "", fmt.Errorf("invalid Oracle JDBC URL format: %s", jdbcUrl)
+func (job *OracleReaderJob) parseJdbcUrl() (string, error) {
+	// 支持多种Oracle连接字符串格式
+	// oracle://user:password@host:port/service
+	// oracle://user:password@host:port:sid
+	jdbcUrl := job.jdbcUrl
+
+	// 移除oracle://前缀
+	if strings.HasPrefix(jdbcUrl, "oracle://") {
+		jdbcUrl = strings.TrimPrefix(jdbcUrl, "oracle://")
 	}
 
-	url := strings.TrimPrefix(jdbcUrl, "oracle://")
-
-	username := job.conf.GetString("username")
-	password := job.conf.GetString("password")
-
-	return fmt.Sprintf("%s/%s@%s", username, password, url), nil
+	// 构建go-ora连接字符串格式
+	// oracle://user:password@host:port/service_name
+	return fmt.Sprintf("oracle://%s:%s@%s", job.username, job.password, jdbcUrl), nil
 }
 
-func (task *OracleReaderTask) Init(ctx context.Context) error {
-	task.conf = task.GetPluginJobConf()
+func (job *OracleReaderJob) Post() error {
+	return nil
+}
 
-	connections := task.conf.GetSliceConfiguration("connection")
-	if len(connections) == 0 {
-		return fmt.Errorf("connection配置不能为空")
-	}
+func (job *OracleReaderJob) Destroy() error {
+	return nil
+}
 
-	connConf := connections[0]
-	jdbcUrls := connConf.GetStringSlice("jdbcUrl")
-	if len(jdbcUrls) == 0 {
-		return fmt.Errorf("jdbcUrl配置不能为空")
-	}
+// OracleReaderTask Oracle读取任务
+type OracleReaderTask struct {
+	config    *config.Configuration
+	readerJob *OracleReaderJob
+	db        *sql.DB
+	table     string
+}
 
-	dsn, err := task.parseConnectionString(jdbcUrls[0])
+func NewOracleReaderTask() *OracleReaderTask {
+	return &OracleReaderTask{}
+}
+
+func (task *OracleReaderTask) Init(config *config.Configuration) error {
+	task.config = config
+	compLogger := logger.Component().WithComponent("OracleReaderTask")
+
+	// 创建ReaderJob来重用配置逻辑
+	task.readerJob = NewOracleReaderJob()
+	err := task.readerJob.Init(config)
 	if err != nil {
 		return err
 	}
 
-	db, err := sql.Open("godror", dsn)
+	// 获取任务特定的表名
+	task.table = config.GetString("parameter.table")
+	if task.table == "" {
+		// 使用第一个表作为默认值
+		if len(task.readerJob.tables) > 0 {
+			task.table = task.readerJob.tables[0]
+		}
+	}
+
+	// 建立数据库连接
+	task.db, err = task.readerJob.connect()
 	if err != nil {
 		return err
 	}
 
-	if err := db.Ping(); err != nil {
-		db.Close()
+	// 执行session SQL
+	err = task.executeSessionSql()
+	if err != nil {
 		return err
 	}
 
-	task.db = db
-
-	return task.executeSessionSql()
-}
-
-func (task *OracleReaderTask) parseConnectionString(jdbcUrl string) (string, error) {
-	if !strings.HasPrefix(jdbcUrl, "oracle://") {
-		return "", fmt.Errorf("invalid Oracle JDBC URL format: %s", jdbcUrl)
-	}
-
-	url := strings.TrimPrefix(jdbcUrl, "oracle://")
-
-	username := task.conf.GetString("username")
-	password := task.conf.GetString("password")
-
-	return fmt.Sprintf("%s/%s@%s", username, password, url), nil
+	compLogger.Info("OracleReader task initialized", zap.String("table", task.table))
+	return nil
 }
 
 func (task *OracleReaderTask) executeSessionSql() error {
-	sessionSqls := task.conf.GetStringSlice("session")
-	for _, sessionSql := range sessionSqls {
-		if _, err := task.db.Exec(sessionSql); err != nil {
-			return fmt.Errorf("execute session SQL failed: %v", err)
-		}
-	}
-	return nil
-}
-
-func (task *OracleReaderTask) Destroy(ctx context.Context) error {
-	if task.db != nil {
-		return task.db.Close()
-	}
-	return nil
-}
-
-func (task *OracleReaderTask) StartRead(ctx context.Context, recordSender plugin.RecordSender) error {
-	querySql := task.conf.GetString("querySql")
-
-	if querySql == "" {
-		columns := task.conf.GetStringSlice("column")
-		connections := task.conf.GetSliceConfiguration("connection")
-		connConf := connections[0]
-		tables := connConf.GetStringSlice("table")
-		table := tables[0]
-
-		if len(columns) == 1 && columns[0] == "*" {
-			var err error
-			columns, err = task.getTableColumns(table)
+	for _, sessionSql := range task.readerJob.session {
+		if sessionSql != "" {
+			_, err := task.db.Exec(sessionSql)
 			if err != nil {
-				return fmt.Errorf("get table columns failed: %v", err)
-			}
-		}
-
-		columnStr := strings.Join(columns, ", ")
-		querySql = fmt.Sprintf("SELECT %s FROM %s", columnStr, table)
-
-		whereCondition := task.conf.GetString("where")
-		if whereCondition != "" {
-			querySql += " WHERE " + whereCondition
-		}
-
-		hint := task.conf.GetString("hint")
-		if hint != "" {
-			querySql = fmt.Sprintf("SELECT /*+ %s */ %s FROM %s", hint, columnStr, table)
-			if whereCondition != "" {
-				querySql += " WHERE " + whereCondition
+				return fmt.Errorf("failed to execute session SQL '%s': %v", sessionSql, err)
 			}
 		}
 	}
+	return nil
+}
 
-	fetchSize := task.conf.GetIntWithDefault("fetchSize", 1024)
+func (task *OracleReaderTask) Prepare() error {
+	return nil
+}
 
-	rows, err := task.db.QueryContext(ctx, querySql)
+func (task *OracleReaderTask) StartRead(recordSender plugin.RecordSender) error {
+	compLogger := logger.Component().WithComponent("OracleReaderTask")
+
+	defer func() {
+		if task.db != nil {
+			task.db.Close()
+		}
+	}()
+
+	// 构建查询SQL
+	querySql, err := task.buildQuery()
 	if err != nil {
-		return fmt.Errorf("query failed: %v", err)
+		return err
+	}
+
+	compLogger.Info("Executing query", zap.String("query", querySql))
+
+	// 执行查询
+	rows, err := task.db.Query(querySql)
+	if err != nil {
+		return fmt.Errorf("failed to execute query: %v", err)
 	}
 	defer rows.Close()
 
+	// 获取列信息
 	columns, err := rows.Columns()
 	if err != nil {
-		return fmt.Errorf("get columns failed: %v", err)
+		return fmt.Errorf("failed to get columns: %v", err)
 	}
 
 	columnTypes, err := rows.ColumnTypes()
 	if err != nil {
-		return fmt.Errorf("get column types failed: %v", err)
+		return fmt.Errorf("failed to get column types: %v", err)
 	}
 
-	count := 0
-	for rows.Next() {
-		record := task.CreateRecord()
+	recordCount := int64(0)
+	fetchSize := task.config.GetIntWithDefault("parameter.fetchSize", DefaultFetchSize)
 
+	// 逐行处理数据
+	for rows.Next() {
+		record := element.NewRecord()
+
+		// 创建扫描目标
 		values := make([]interface{}, len(columns))
 		valuePtrs := make([]interface{}, len(columns))
 		for i := range values {
 			valuePtrs[i] = &values[i]
 		}
 
+		// 扫描行数据
 		if err := rows.Scan(valuePtrs...); err != nil {
-			return fmt.Errorf("scan row failed: %v", err)
+			return fmt.Errorf("failed to scan row: %v", err)
 		}
 
+		// 转换为DataX记录
 		for i, value := range values {
-			col, err := task.convertValue(value, columnTypes[i])
+			column, err := task.convertValue(value, columnTypes[i])
 			if err != nil {
-				return fmt.Errorf("convert value failed: %v", err)
+				return fmt.Errorf("failed to convert value at column %s: %v", columns[i], err)
 			}
-			record.Add(col)
+			record.AddColumn(column)
 		}
 
-		recordSender.SendWriter(record)
-		count++
+		// 发送记录
+		if err := recordSender.SendRecord(record); err != nil {
+			return fmt.Errorf("failed to send record: %v", err)
+		}
 
-		if count%fetchSize == 0 {
-			select {
-			case <-ctx.Done():
-				return ctx.Err()
-			default:
-			}
+		recordCount++
+
+		// 每fetchSize条记录输出一次进度
+		if recordCount%int64(fetchSize) == 0 {
+			compLogger.Debug("Reading progress", zap.Int64("records", recordCount))
 		}
 	}
 
-	return rows.Err()
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("rows iteration error: %v", err)
+	}
+
+	compLogger.Info("Read task completed", zap.Int64("totalRecords", recordCount))
+	return nil
 }
 
-func (task *OracleReaderTask) getTableColumns(table string) ([]string, error) {
+func (task *OracleReaderTask) buildQuery() (string, error) {
+	// 如果指定了querySql，直接使用
+	if task.readerJob.querySql != "" {
+		return task.readerJob.querySql, nil
+	}
+
+	// 处理列配置
+	columns := task.readerJob.columns
+	if len(columns) == 1 && columns[0] == "*" {
+		// 获取表的实际列名
+		actualColumns, err := task.getTableColumns()
+		if err != nil {
+			return "", fmt.Errorf("failed to get table columns: %v", err)
+		}
+		columns = actualColumns
+	}
+
+	columnStr := strings.Join(columns, ", ")
+
+	// 构建基本查询
+	var querySql string
+	if task.readerJob.hint != "" {
+		querySql = fmt.Sprintf("SELECT /*+ %s */ %s FROM %s", task.readerJob.hint, columnStr, task.table)
+	} else {
+		querySql = fmt.Sprintf("SELECT %s FROM %s", columnStr, task.table)
+	}
+
+	// 添加WHERE条件
+	whereCondition := task.config.GetString("parameter.where")
+	if whereCondition != "" {
+		querySql += " WHERE " + whereCondition
+	}
+
+	return querySql, nil
+}
+
+func (task *OracleReaderTask) getTableColumns() ([]string, error) {
 	query := `
 		SELECT column_name
 		FROM user_tab_columns
 		WHERE table_name = UPPER(?)
 		ORDER BY column_id`
 
-	rows, err := task.db.Query(query, table)
+	rows, err := task.db.Query(query, task.table)
 	if err != nil {
 		return nil, err
 	}
@@ -399,17 +481,18 @@ func (task *OracleReaderTask) getTableColumns(table string) ([]string, error) {
 
 func (task *OracleReaderTask) convertValue(value interface{}, columnType *sql.ColumnType) (element.Column, error) {
 	if value == nil {
-		return element.NewDefaultColumn(nil, element.Null), nil
+		return element.NewStringColumn(""), nil
 	}
 
 	typeName := strings.ToUpper(columnType.DatabaseTypeName())
 
 	switch typeName {
-	case "NUMBER", "INTEGER", "INT", "SMALLINT":
+	case "NUMBER", "INTEGER", "INT", "SMALLINT", "BIGINT":
 		switch v := value.(type) {
 		case int64:
 			return element.NewLongColumn(v), nil
 		case float64:
+			// Oracle NUMBER类型可能返回float64
 			if v == float64(int64(v)) {
 				return element.NewLongColumn(int64(v)), nil
 			}
@@ -441,35 +524,29 @@ func (task *OracleReaderTask) convertValue(value interface{}, columnType *sql.Co
 			return element.NewStringColumn(fmt.Sprintf("%v", v)), nil
 		}
 
-	case "LONG", "CHAR", "NCHAR", "VARCHAR", "VARCHAR2", "NVARCHAR2", "CLOB", "NCLOB":
+	case "CHAR", "NCHAR", "VARCHAR", "VARCHAR2", "NVARCHAR2", "CLOB", "NCLOB", "LONG":
 		return element.NewStringColumn(fmt.Sprintf("%v", value)), nil
 
-	case "DATE", "TIMESTAMP":
+	case "DATE", "TIMESTAMP", "TIMESTAMP WITH TIME ZONE", "TIMESTAMP WITH LOCAL TIME ZONE":
 		switch v := value.(type) {
 		case time.Time:
 			return element.NewDateColumn(v), nil
 		case string:
-			if t, err := time.Parse("2006-01-02 15:04:05", v); err == nil {
-				return element.NewDateColumn(t), nil
+			// 尝试解析常见的时间格式
+			timeFormats := []string{
+				"2006-01-02 15:04:05",
+				"2006-01-02T15:04:05Z",
+				"2006-01-02T15:04:05.000Z",
+				"2006-01-02",
+			}
+			for _, format := range timeFormats {
+				if t, err := time.Parse(format, v); err == nil {
+					return element.NewDateColumn(t), nil
+				}
 			}
 			return element.NewStringColumn(v), nil
 		default:
 			return element.NewStringColumn(fmt.Sprintf("%v", v)), nil
-		}
-
-	case "BIT", "BOOL":
-		switch v := value.(type) {
-		case bool:
-			return element.NewBoolColumn(v), nil
-		case int64:
-			return element.NewBoolColumn(v != 0), nil
-		case string:
-			if boolVal, err := strconv.ParseBool(v); err == nil {
-				return element.NewBoolColumn(boolVal), nil
-			}
-			return element.NewStringColumn(v), nil
-		default:
-			return element.NewBoolColumn(fmt.Sprintf("%v", v) != "0"), nil
 		}
 
 	case "BLOB", "BFILE", "RAW", "LONG RAW":
@@ -483,4 +560,15 @@ func (task *OracleReaderTask) convertValue(value interface{}, columnType *sql.Co
 	default:
 		return element.NewStringColumn(fmt.Sprintf("%v", value)), nil
 	}
+}
+
+func (task *OracleReaderTask) Post() error {
+	return nil
+}
+
+func (task *OracleReaderTask) Destroy() error {
+	if task.db != nil {
+		return task.db.Close()
+	}
+	return nil
 }

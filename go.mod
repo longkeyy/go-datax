@@ -5,6 +5,7 @@ go 1.23.0
 require (
 	github.com/ClickHouse/clickhouse-go/v2 v2.30.0
 	// github.com/godror/godror v0.44.7
+	github.com/sijms/go-ora/v2 v2.8.21
 	go.mongodb.org/mongo-driver v1.17.1
 	gorm.io/driver/mysql v1.6.0
 	gorm.io/driver/postgres v1.6.0
