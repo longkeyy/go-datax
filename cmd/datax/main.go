@@ -9,6 +9,7 @@ import (
 	_ "github.com/longkeyy/go-datax/plugins/reader/jsonfilereader"
 	_ "github.com/longkeyy/go-datax/plugins/reader/mongoreader"
 	_ "github.com/longkeyy/go-datax/plugins/reader/mysqlreader"
+	_ "github.com/longkeyy/go-datax/plugins/reader/oraclereader"
 	_ "github.com/longkeyy/go-datax/plugins/reader/postgresqlreader"
 	_ "github.com/longkeyy/go-datax/plugins/reader/sqlitereader"
 	_ "github.com/longkeyy/go-datax/plugins/reader/sqlserverreader"
@@ -19,15 +20,16 @@ import (
 	_ "github.com/longkeyy/go-datax/plugins/writer/jsonfilewriter"
 	_ "github.com/longkeyy/go-datax/plugins/writer/mongowriter"
 	_ "github.com/longkeyy/go-datax/plugins/writer/mysqlwriter"
+	_ "github.com/longkeyy/go-datax/plugins/writer/oraclewriter"
 	_ "github.com/longkeyy/go-datax/plugins/writer/postgresqlwriter"
 	_ "github.com/longkeyy/go-datax/plugins/writer/sqlitewriter"
 	_ "github.com/longkeyy/go-datax/plugins/writer/sqlserverwriter"
 	_ "github.com/longkeyy/go-datax/plugins/writer/streamwriter"
 	_ "github.com/longkeyy/go-datax/plugins/writer/txtfilewriter"
-	_ "github.com/longkeyy/go-datax/plugins/reader/oraclereader"
-	_ "github.com/longkeyy/go-datax/plugins/writer/oraclewriter"
 )
 
+var Version = "v1.0.0"
+
 func main() {
-	engine.Main()
+	engine.Main(Version)
 }

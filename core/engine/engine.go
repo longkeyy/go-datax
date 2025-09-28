@@ -72,7 +72,7 @@ func (e *Engine) Entry(args []string) error {
 	return e.Start(configuration)
 }
 
-func Main() {
+func Main(ver string) {
 	// 初始化zap日志器
 	logConfig := &logger.LoggerConfig{
 		Level:       logger.LevelInfo,
@@ -89,8 +89,7 @@ func Main() {
 	// 使用应用级日志器
 	appLogger := logger.App()
 	appLogger.Info("DataX Go starting",
-		zap.String("version", "1.0.0"),
-		zap.String("build", "dev"))
+		zap.String("version", ver))
 
 	var jobPath string
 	flag.StringVar(&jobPath, "job", "", "Job configuration file path")

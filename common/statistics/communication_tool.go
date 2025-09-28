@@ -10,10 +10,10 @@ import (
 // 统计指标常量定义
 const (
 	// 基础指标
-	STAGE      = "stage"
-	BYTE_SPEED = "byteSpeed"
+	STAGE        = "stage"
+	BYTE_SPEED   = "byteSpeed"
 	RECORD_SPEED = "recordSpeed"
-	PERCENTAGE = "percentage"
+	PERCENTAGE   = "percentage"
 
 	// 读取相关指标
 	READ_SUCCEED_RECORDS = "readSucceedRecords"
@@ -28,10 +28,10 @@ const (
 	WRITE_FAILED_BYTES     = "writeFailedBytes"
 
 	// 汇总指标
-	TOTAL_READ_RECORDS = "totalReadRecords"
-	TOTAL_READ_BYTES   = "totalReadBytes"
-	TOTAL_ERROR_RECORDS = "totalErrorRecords"
-	TOTAL_ERROR_BYTES   = "totalErrorBytes"
+	TOTAL_READ_RECORDS    = "totalReadRecords"
+	TOTAL_READ_BYTES      = "totalReadBytes"
+	TOTAL_ERROR_RECORDS   = "totalErrorRecords"
+	TOTAL_ERROR_BYTES     = "totalErrorBytes"
 	WRITE_SUCCEED_RECORDS = "writeSucceedRecords"
 	WRITE_SUCCEED_BYTES   = "writeSucceedBytes"
 
@@ -136,13 +136,13 @@ func (ct *CommunicationTool) GetWriteSucceedBytes(communication *Communication) 
 
 // ProgressSnapshot 进度快照结构
 type ProgressSnapshot struct {
-	Total      string
-	Speed      string
-	Error      string
-	WaitWriter string
-	WaitReader string
+	Total       string
+	Speed       string
+	Error       string
+	WaitWriter  string
+	WaitReader  string
 	Transformer string
-	Percentage string
+	Percentage  string
 }
 
 // GetSnapshot 获取进度快照字符串
@@ -257,7 +257,7 @@ func (ct *CommunicationTool) FormatBytes(bytes int64) string {
 	return fmt.Sprintf("%.2f%s", float64(bytes)/float64(div), units[exp+1])
 }
 
-// formatTime 格式化时间显示（毫秒转为易读格式）
+// FormatTime 格式化时间显示（毫秒转为易读格式）
 func (ct *CommunicationTool) FormatTime(millis int64) string {
 	if millis < 0 {
 		return "0ms"
@@ -278,31 +278,31 @@ func (ct *CommunicationTool) FormatTime(millis int64) string {
 
 // JSONSnapshot JSON格式的进度快照
 type JSONSnapshot struct {
-	TotalBytes    int64   `json:"totalBytes"`
-	TotalRecords  int64   `json:"totalRecords"`
-	SpeedBytes    int64   `json:"speedBytes"`
-	SpeedRecords  int64   `json:"speedRecords"`
-	Stage         int64   `json:"stage"`
-	ErrorRecords  int64   `json:"errorRecords"`
-	ErrorBytes    int64   `json:"errorBytes"`
-	ErrorMessage  string  `json:"errorMessage"`
-	Percentage    float64 `json:"percentage"`
-	WaitReaderTime int64  `json:"waitReaderTime"`
-	WaitWriterTime int64  `json:"waitWriterTime"`
+	TotalBytes     int64   `json:"totalBytes"`
+	TotalRecords   int64   `json:"totalRecords"`
+	SpeedBytes     int64   `json:"speedBytes"`
+	SpeedRecords   int64   `json:"speedRecords"`
+	Stage          int64   `json:"stage"`
+	ErrorRecords   int64   `json:"errorRecords"`
+	ErrorBytes     int64   `json:"errorBytes"`
+	ErrorMessage   string  `json:"errorMessage"`
+	Percentage     float64 `json:"percentage"`
+	WaitReaderTime int64   `json:"waitReaderTime"`
+	WaitWriterTime int64   `json:"waitWriterTime"`
 }
 
 // GetJSONSnapshot 获取JSON格式的进度快照
 func (ct *CommunicationTool) GetJSONSnapshot(communication *Communication) (string, error) {
 	snapshot := JSONSnapshot{
-		TotalBytes:    communication.GetLongCounter(TOTAL_READ_BYTES),
-		TotalRecords:  communication.GetLongCounter(TOTAL_READ_RECORDS),
-		SpeedBytes:    communication.GetLongCounter(BYTE_SPEED),
-		SpeedRecords:  communication.GetLongCounter(RECORD_SPEED),
-		Stage:         communication.GetLongCounter(STAGE),
-		ErrorRecords:  communication.GetLongCounter(TOTAL_ERROR_RECORDS),
-		ErrorBytes:    communication.GetLongCounter(TOTAL_ERROR_BYTES),
-		ErrorMessage:  communication.GetThrowableMessage(),
-		Percentage:    float64(communication.GetLongCounter(PERCENTAGE)),
+		TotalBytes:     communication.GetLongCounter(TOTAL_READ_BYTES),
+		TotalRecords:   communication.GetLongCounter(TOTAL_READ_RECORDS),
+		SpeedBytes:     communication.GetLongCounter(BYTE_SPEED),
+		SpeedRecords:   communication.GetLongCounter(RECORD_SPEED),
+		Stage:          communication.GetLongCounter(STAGE),
+		ErrorRecords:   communication.GetLongCounter(TOTAL_ERROR_RECORDS),
+		ErrorBytes:     communication.GetLongCounter(TOTAL_ERROR_BYTES),
+		ErrorMessage:   communication.GetThrowableMessage(),
+		Percentage:     float64(communication.GetLongCounter(PERCENTAGE)),
 		WaitReaderTime: communication.GetLongCounter(WAIT_READER_TIME),
 		WaitWriterTime: communication.GetLongCounter(WAIT_WRITER_TIME),
 	}
