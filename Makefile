@@ -2,7 +2,7 @@
 # Makefile for Go builds
 
 # Target platforms for compilation
-PLATFORMS := linux/amd64 darwin/arm64 darwin/amd64 windows/amd64
+PLATFORMS := linux/amd64 linux/arm64 darwin/arm64 darwin/amd64 windows/amd64 windows/arm64 freebsd/amd64 freebsd/arm64
 DIST_DIR := dist
 
 # Get current timestamp as version number
