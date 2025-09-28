@@ -28,7 +28,9 @@ func (tgc *TaskGroupContainer) Start(readerTaskConfig, writerTaskConfig *config.
 	log.Printf("TaskGroup %d starts", tgc.taskGroupId)
 
 	// 暂时简化实现：使用普通Channel，Transformer功能在Writer中处理
-	channel := plugin.NewChannel(10000)
+	// 动态计算缓冲区大小：基于任务预期数据量
+	bufferSize := tgc.calculateOptimalBufferSize(readerTaskConfig)
+	channel := plugin.NewChannel(bufferSize)
 	defer channel.Close()
 
 	// 创建RecordSender和RecordReceiver
@@ -129,6 +131,38 @@ func (tgc *TaskGroupContainer) createReaderTask(readerConfig *config.Configurati
 func (tgc *TaskGroupContainer) createWriterTask(writerConfig *config.Configuration) (plugin.WriterTask, error) {
 	writerName := writerConfig.GetString("name")
 	return plugin.CreateWriterTask(writerName)
+}
+
+// calculateOptimalBufferSize 计算最优的通道缓冲区大小
+func (tgc *TaskGroupContainer) calculateOptimalBufferSize(readerConfig *config.Configuration) int {
+	// 检查是否有splitRange配置，如果有，说明是大数据集的分片任务
+	if splitRange := readerConfig.Get("parameter.splitRange"); splitRange != nil {
+		if rangeMap, ok := splitRange.(map[string]interface{}); ok {
+			// 如果是offset类型的分片，根据limit值动态调整缓冲区大小
+			if splitType, exists := rangeMap["type"]; exists && splitType == "offset" {
+				if limit, exists := rangeMap["limit"]; exists {
+					if limitInt, ok := limit.(int64); ok {
+						// 对于大数据集，使用更大的缓冲区但有上限
+						// 基本策略：缓冲区大小 = min(limit/5, 200000)，但至少10000
+						bufferSize := int(limitInt / 5)
+						if bufferSize < 10000 {
+							bufferSize = 10000
+						} else if bufferSize > 200000 {
+							bufferSize = 200000
+						}
+						log.Printf("TaskGroup %d: Dynamic buffer size %d for offset split (limit=%d)",
+							tgc.taskGroupId, bufferSize, limitInt)
+						return bufferSize
+					}
+				}
+			}
+		}
+	}
+
+	// 默认缓冲区大小
+	defaultSize := 10000
+	log.Printf("TaskGroup %d: Using default buffer size %d", tgc.taskGroupId, defaultSize)
+	return defaultSize
 }
 
 // MockReaderTask 模拟Reader Task实现

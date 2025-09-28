@@ -1,0 +1,34 @@
+{
+    "job": {
+        "setting": {
+            "speed": {
+                "channel": 2
+            }
+        },
+        "content": [
+            {
+                "reader": {
+                    "name": "postgresqlreader",
+                    "parameter": {
+                        "username": "postgres",
+                        "password": "postgres",
+                        "column": ["*"],
+                        "splitPk": "email",
+                        "connection": [
+                            {
+                                "jdbcUrl": ["jdbc:postgresql://localhost:5432/llm_datasets"],
+                                "table": ["users"]
+                            }
+                        ]
+                    }
+                },
+                "writer": {
+                    "name": "streamwriter",
+                    "parameter": {
+                        "print": true
+                    }
+                }
+            }
+        ]
+    }
+}
