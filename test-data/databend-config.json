@@ -1,0 +1,73 @@
+{
+  "job": {
+    "content": [
+      {
+        "reader": {
+          "name": "streamreader",
+          "parameter": {
+            "column": [
+              {
+                "value": "DataX",
+                "type": "string"
+              },
+              {
+                "value": 19880808,
+                "type": "long"
+              },
+              {
+                "value": "1926-08-08 08:08:08",
+                "type": "date"
+              },
+              {
+                "value": "1988-08-08 08:08:08",
+                "type": "date"
+              },
+              {
+                "value": true,
+                "type": "bool"
+              },
+              {
+                "value": "test",
+                "type": "bytes"
+              },
+              {
+                "value": "{\"type\": \"variant\", \"value\": \"test\"}",
+                "type": "string"
+              }
+            ],
+            "sliceRecordCount": 10000
+          }
+        },
+        "writer": {
+          "name": "databendwriter",
+          "parameter": {
+            "username": "databend",
+            "password": "databend",
+            "column": ["a", "b", "c", "d", "e", "f", "g"],
+            "batchSize": 1000,
+            "writeMode": "insert",
+            "preSql": [
+              "CREATE TABLE IF NOT EXISTS datax.sample1(a STRING, b INT64, c DATE, d TIMESTAMP, e BOOLEAN, f STRING, g VARIANT)"
+            ],
+            "postSql": [
+              "SELECT COUNT(*) FROM datax.sample1"
+            ],
+            "connection": [
+              {
+                "jdbcUrl": "jdbc:databend://localhost:8000/datax",
+                "table": [
+                  "sample1"
+                ]
+              }
+            ]
+          }
+        }
+      }
+    ],
+    "setting": {
+      "speed": {
+        "channel": 1
+      }
+    }
+  }
+}
