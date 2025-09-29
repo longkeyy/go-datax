@@ -1,0 +1,47 @@
+{
+  "job": {
+    "setting": {
+      "speed": {
+        "channel": 2
+      }
+    },
+    "content": [
+      {
+        "reader": {
+          "name": "streamreader",
+          "parameter": {
+            "sliceRecordCount": 10,
+            "column": [
+              {"type": "string", "value": "test_value"},
+              {"type": "long", "value": "12345"},
+              {"type": "double", "value": "123.45"},
+              {"type": "date", "value": "2023-12-01 10:00:00"}
+            ]
+          }
+        },
+        "writer": {
+          "name": "hdfswriter",
+          "parameter": {
+            "defaultFS": "hdfs://localhost:9000",
+            "path": "/user/test/output",
+            "fileName": "test_output",
+            "fileType": "TEXT",
+            "fieldDelimiter": "\t",
+            "writeMode": "truncate",
+            "encoding": "UTF-8",
+            "column": [
+              {"name": "name", "type": "string"},
+              {"name": "id", "type": "long"},
+              {"name": "amount", "type": "double"},
+              {"name": "create_time", "type": "date"}
+            ],
+            "compress": "",
+            "haveKerberos": false,
+            "hdfsUsername": "hadoop",
+            "nullFormat": "\\N"
+          }
+        }
+      }
+    ]
+  }
+}

@@ -20,6 +20,7 @@ test-data/
 .mcp.json
 .vscode/
 .idea/
+CLAUDE.md
 
 # OS files
 .DS_Store

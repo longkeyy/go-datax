@@ -1,0 +1,36 @@
+{
+  "job": {
+    "setting": {
+      "speed": {
+        "channel": 2
+      }
+    },
+    "content": [
+      {
+        "reader": {
+          "name": "hdfsreader",
+          "parameter": {
+            "defaultFS": "hdfs://localhost:9000",
+            "path": ["/user/test/input/*.txt"],
+            "fileType": "TEXT",
+            "encoding": "UTF-8",
+            "fieldDelimiter": ",",
+            "column": [
+              {"index": 0, "type": "string"},
+              {"index": 1, "type": "long"},
+              {"index": 2, "type": "double"},
+              {"index": 3, "type": "date", "format": "2006-01-02"}
+            ],
+            "haveKerberos": false,
+            "hdfsUsername": "hadoop",
+            "skipEmptyOrcFile": false
+          }
+        },
+        "writer": {
+          "name": "streamwriter",
+          "parameter": {}
+        }
+      }
+    ]
+  }
+}

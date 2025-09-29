@@ -19,6 +19,7 @@ const (
 	SQLite
 	SQLServer
 	Oracle
+	GaussDB
 )
 
 // String returns the human-readable name for the database type.
@@ -34,6 +35,8 @@ func (dt DatabaseType) String() string {
 		return "SQLServer"
 	case Oracle:
 		return "Oracle"
+	case GaussDB:
+		return "GaussDB"
 	default:
 		return "Unknown"
 	}
@@ -245,6 +248,8 @@ func detectDatabaseTypeFromJDBC(jdbcUrl string) (DatabaseType, error) {
 		return SQLServer, nil
 	} else if strings.Contains(jdbcUrl, "oracle") {
 		return Oracle, nil
+	} else if strings.Contains(jdbcUrl, "gaussdb") || strings.Contains(jdbcUrl, "opengauss") {
+		return GaussDB, nil
 	}
 	return PostgreSQL, fmt.Errorf("unsupported database type in JDBC URL: %s", jdbcUrl)
 }
@@ -256,6 +261,9 @@ func createConnectionFromJDBC(dbType DatabaseType, jdbcUrl, username, password s
 		return createPostgreSQLConnection(jdbcUrl, username, password)
 	case MySQL:
 		return createMySQLConnection(jdbcUrl, username, password)
+	case GaussDB:
+		// GaussDB uses PostgreSQL protocol
+		return createPostgreSQLConnection(jdbcUrl, username, password)
 	// TODO: 添加其他数据库类型的支持
 	default:
 		return nil, fmt.Errorf("database type %s not yet supported in common layer", dbType.String())

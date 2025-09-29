@@ -8,7 +8,7 @@ golang版本的DataX，完全兼容DataX配置文件格式的数据同步工具�
 - 🚀 **高性能**: 基于Go语言，支持高并发数据传输
 - 🔧 **纯Go实现**: 无需额外依赖，单二进制部署
 - 📊 **完整监控**: 实时统计、进度监控、性能指标
-- 🔗 **丰富插件**: 支持20+种数据源和目标
+- 🔗 **丰富插件**: 支持30+种数据源和目标
 - 📝 **结构化日志**: 基于zap的三层日志架构
 - ⚡ **智能优化**: 动态缓冲区、批处理、事务管理
 
@@ -59,6 +59,12 @@ golang版本的DataX，完全兼容DataX配置文件格式的数据同步工具�
 - [x] **SqliteReader**: 从SQLite数据库读取数据，支持ROWID优化
 - [x] **SqlServerReader**: 从SQL Server数据库读取数据
 - [x] **OracleReader**: 从Oracle数据库读取数据 **(基于go-ora纯Go驱动)**
+- [x] **SybaseReader**: 从Sybase ASE数据库读取数据 **(新增)**
+  - 🔧 **TDS协议**: 基于thda/tds纯Go驱动，原生TDS协议支持
+  - 🏢 **企业级**: 支持Sybase ASE企业级数据库完整特性
+  - 🎯 **兼容性**: 完全兼容DataX Java版本配置参数
+  - 📊 **高性能**: 支持fetchSize优化和分片读取
+  - 🔄 **纯Go**: 无需安装额外驱动，单二进制部署
 - [x] **CassandraReader**: 从Apache Cassandra分布式数据库读取数据 **(新增)**
 - [x] **ClickHouseReader**: 从ClickHouse列存数据库读取数据
 - [x] **DorisReader**: 从Apache Doris数据库读取数据
@@ -83,6 +89,12 @@ golang版本的DataX，完全兼容DataX配置文件格式的数据同步工具�
 - [x] **SqliteWriter**: 向SQLite数据库写入数据
 - [x] **SqlServerWriter**: 向SQL Server数据库写入数据
 - [x] **OracleWriter**: 向Oracle数据库写入数据 **(基于go-ora纯Go驱动)**
+- [x] **SybaseWriter**: 向Sybase ASE数据库写入数据 **(新增)**
+  - 🔧 **TDS协议**: 基于thda/tds纯Go驱动，原生TDS协议支持
+  - ⚡ **批量写入**: 支持高性能批量插入和事务处理
+  - 🎯 **写入模式**: 支持insert/replace/update多种写入模式
+  - 🔄 **故障恢复**: 支持replace模式的失败恢复机制
+  - 📊 **类型支持**: 支持Sybase ASE全部数据类型转换
 - [x] **CassandraWriter**: 向Apache Cassandra分布式数据库写入数据 **(新增)**
 - [x] **ClickHouseWriter**: 向ClickHouse列存数据库写入数据
 - [x] **DatabendWriter**: 向Databend云原生数据仓库写入数据 **(新增)**
@@ -679,7 +691,22 @@ taskLogger.Info("Task completed", zap.Int64("records", count))
 
 ## 更新日志
 
-### v1.3.0 (最新) 🆕
+### v1.4.0 (最新) 🆕
+- **新增**: Apache Cassandra分布式数据库支持（基于官方gocql驱动）
+- **新增**: FTP/SFTP文件传输协议支持（支持双协议）
+- **新增**: Hadoop HDFS分布式文件系统支持（基于纯Go实现）
+- **新增**: ElasticSearch搜索引擎支持（兼容5.x-8.x版本）
+- **新增**: Neo4j图数据库支持（专业图数据写入）
+- **新增**: Databend云原生数据仓库支持
+- **新增**: StarRocks分析数据库支持（兼容MySQL协议，支持Stream Load）
+- **新增**: OceanBase分布式数据库支持（兼容MySQL/Oracle双模式）
+- **新增**: GaussDB企业级数据库支持（基于PostgreSQL协议）
+- **新增**: Sybase ASE数据库支持（基于纯Go TDS协议）
+- **新增**: TDengine时序数据库支持（基于官方驱动）
+- **优化**: 完成所有新插件的Java版本兼容性验证
+- **优化**: 项目现在支持30+种数据库和存储系统
+
+### v1.3.0
 - **新增**: 阿里云OSS对象存储支持（基于官方SDK v2）
 - **新增**: Hadoop HDFS分布式文件系统支持
 - **新增**: Oracle数据库支持（基于go-ora纯Go驱动）

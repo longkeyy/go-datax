@@ -1,0 +1,62 @@
+{
+  "job": {
+    "setting": {
+      "speed": {
+        "channel": 3
+      }
+    },
+    "content": [
+      {
+        "reader": {
+          "name": "starrocksreader",
+          "parameter": {
+            "username": "root",
+            "password": "password",
+            "connection": [
+              {
+                "jdbcUrl": ["jdbc:mysql://starrocks-fe:9030/demo_db"],
+                "table": ["user_behavior"]
+              }
+            ],
+            "column": ["user_id", "item_id", "category_id", "behavior_type", "timestamp"],
+            "where": "timestamp >= '2023-01-01' AND timestamp < '2024-01-01'",
+            "splitPk": "user_id"
+          }
+        },
+        "writer": {
+          "name": "starrockswriter",
+          "parameter": {
+            "username": "root",
+            "password": "password",
+            "database": "analytics_db",
+            "connection": [
+              {
+                "jdbcUrl": ["jdbc:mysql://starrocks-fe:9030/analytics_db"],
+                "table": ["user_behavior_analysis"]
+              }
+            ],
+            "column": ["user_id", "item_id", "category_id", "behavior_type", "timestamp"],
+            "loadUrl": ["starrocks-fe:8030", "starrocks-fe2:8030"],
+            "labelPrefix": "datax_",
+            "maxBatchRows": 100000,
+            "maxBatchSize": 10485760,
+            "flushInterval": 30000,
+            "loadProps": {
+              "format": "CSV",
+              "column_separator": "\t",
+              "row_delimiter": "\n",
+              "timeout": 3600,
+              "max_filter_ratio": 0.1
+            },
+            "preSql": [
+              "DELETE FROM user_behavior_analysis WHERE timestamp >= '2023-01-01'"
+            ],
+            "postSql": [
+              "ANALYZE TABLE user_behavior_analysis"
+            ]
+          }
+        }
+      }
+    ]
+  }
+}
