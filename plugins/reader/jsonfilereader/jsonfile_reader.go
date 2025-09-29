@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -15,9 +16,8 @@ import (
 
 	"github.com/longkeyy/go-datax/common/config"
 	"github.com/longkeyy/go-datax/common/element"
-	"github.com/longkeyy/go-datax/common/logger"
 	"github.com/longkeyy/go-datax/common/plugin"
-	"go.uber.org/zap"
+	"github.com/longkeyy/go-datax/common/factory"
 )
 
 // JSONFormat JSON文件格式枚举
@@ -31,7 +31,7 @@ const (
 
 // JSONFileReaderJob JSON文件读取作业
 type JSONFileReaderJob struct {
-	config            *config.Configuration
+	config            config.Configuration
 	paths             []string
 	columns           []map[string]interface{}
 	encoding          string
@@ -40,6 +40,7 @@ type JSONFileReaderJob struct {
 	format            JSONFormat
 	filePattern       string
 	resolvedFilePaths []string
+	factory           *factory.DataXFactory
 }
 
 func NewJSONFileReaderJob() *JSONFileReaderJob {
@@ -47,12 +48,12 @@ func NewJSONFileReaderJob() *JSONFileReaderJob {
 		encoding:   "UTF-8",
 		nullFormat: "",
 		format:     FormatAuto,
+		factory:    factory.GetGlobalFactory(),
 	}
 }
 
-func (job *JSONFileReaderJob) Init(config *config.Configuration) error {
+func (job *JSONFileReaderJob) Init(config config.Configuration) error {
 	job.config = config
-	compLogger := logger.Component().WithComponent("JSONFileReaderJob")
 
 	// 获取路径配置 - 支持glob模式
 	pathsConfig := config.GetList("parameter.path")
@@ -147,8 +148,7 @@ func (job *JSONFileReaderJob) Init(config *config.Configuration) error {
 	case "auto":
 		job.format = FormatAuto
 	default:
-		compLogger.Warn("Unknown format specified, using auto detection",
-			zap.String("format", formatStr))
+		log.Printf("Unknown format specified, using auto detection: %s", formatStr)
 		job.format = FormatAuto
 	}
 
@@ -160,20 +160,16 @@ func (job *JSONFileReaderJob) Init(config *config.Configuration) error {
 		}
 	}
 
-	compLogger.Info("JSONFileReader initialized",
-		zap.Strings("paths", job.paths),
-		zap.Int("files", len(job.resolvedFilePaths)),
-		zap.Int("columns", len(job.columns)),
-		zap.String("format", string(job.format)))
+	log.Printf("JSONFileReader initialized: paths=%v, files=%d, columns=%d, format=%s",
+		job.paths, len(job.resolvedFilePaths), len(job.columns), string(job.format))
 	return nil
 }
 
 func (job *JSONFileReaderJob) resolveFilePaths() error {
 	job.resolvedFilePaths = make([]string, 0)
-	compLogger := logger.Component().WithComponent("JSONFileReaderJob")
 
 	for _, pathPattern := range job.paths {
-		compLogger.Debug("Processing path pattern", zap.String("pattern", pathPattern))
+		log.Printf("Processing path pattern: %s", pathPattern)
 
 		if strings.Contains(pathPattern, "*") {
 			// 通配符路径，支持递归模式如 /*/**.jsonl
@@ -191,9 +187,7 @@ func (job *JSONFileReaderJob) resolveFilePaths() error {
 			} else {
 				for _, match := range matches {
 					if err := job.addFileIfValid(match); err != nil {
-						compLogger.Warn("Skipping invalid file",
-							zap.String("file", match),
-							zap.Error(err))
+						log.Printf("Skipping invalid file %s: %v", match, err)
 					}
 				}
 			}
@@ -222,8 +216,7 @@ func (job *JSONFileReaderJob) resolveFilePaths() error {
 		return fmt.Errorf("no JSON files found matching the path patterns")
 	}
 
-	compLogger.Info("File resolution completed",
-		zap.Int("totalFiles", len(job.resolvedFilePaths)))
+	log.Printf("File resolution completed: totalFiles=%d", len(job.resolvedFilePaths))
 	return nil
 }
 
@@ -334,9 +327,8 @@ func (job *JSONFileReaderJob) Prepare() error {
 	return nil
 }
 
-func (job *JSONFileReaderJob) Split(adviceNumber int) ([]*config.Configuration, error) {
-	taskConfigs := make([]*config.Configuration, 0)
-	compLogger := logger.Component().WithComponent("JSONFileReaderJob")
+func (job *JSONFileReaderJob) Split(adviceNumber int) ([]config.Configuration, error) {
+	taskConfigs := make([]config.Configuration, 0)
 
 	// 按文件进行分片
 	fileCount := len(job.resolvedFilePaths)
@@ -371,7 +363,7 @@ func (job *JSONFileReaderJob) Split(adviceNumber int) ([]*config.Configuration, 
 		taskConfigs = append(taskConfigs, taskConfig)
 	}
 
-	compLogger.Info("Split tasks completed", zap.Int("taskCount", len(taskConfigs)))
+	log.Printf("Split tasks completed: taskCount=%d", len(taskConfigs))
 	return taskConfigs, nil
 }
 
@@ -409,7 +401,6 @@ func (job *JSONFileReaderJob) detectJSONFormat(reader io.Reader) (JSONFormat, er
 
 // inferSchema 通过预读文件来推断JSON schema
 func (job *JSONFileReaderJob) inferSchema() ([]map[string]interface{}, error) {
-	compLogger := logger.Component().WithComponent("JSONFileReaderJob")
 
 	if len(job.resolvedFilePaths) == 0 {
 		return nil, fmt.Errorf("no files available for schema inference")
@@ -425,17 +416,13 @@ func (job *JSONFileReaderJob) inferSchema() ([]map[string]interface{}, error) {
 	totalSamples := 0
 	maxSamples := 100 // 最多预读100行
 
-	compLogger.Info("Starting schema inference",
-		zap.Int("maxFiles", maxFiles),
-		zap.Int("maxSamples", maxSamples))
+	log.Printf("Starting schema inference: maxFiles=%d, maxSamples=%d", maxFiles, maxSamples)
 
 	for i := 0; i < maxFiles && totalSamples < maxSamples; i++ {
 		filePath := job.resolvedFilePaths[i]
 		samples, err := job.sampleFile(filePath, maxSamples-totalSamples)
 		if err != nil {
-			compLogger.Warn("Failed to sample file, skipping",
-				zap.String("file", filePath),
-				zap.Error(err))
+			log.Printf("Failed to sample file, skipping %s: %v", filePath, err)
 			continue
 		}
 
@@ -445,9 +432,7 @@ func (job *JSONFileReaderJob) inferSchema() ([]map[string]interface{}, error) {
 			totalSamples++
 		}
 
-		compLogger.Debug("File sampling completed",
-			zap.String("file", filePath),
-			zap.Int("samples", len(samples)))
+		log.Printf("File sampling completed: file=%s, samples=%d", filePath, len(samples))
 	}
 
 	if len(fieldStats) == 0 {
@@ -465,9 +450,7 @@ func (job *JSONFileReaderJob) inferSchema() ([]map[string]interface{}, error) {
 		columns = append(columns, column)
 	}
 
-	compLogger.Info("Schema inference completed",
-		zap.Int("totalSamples", totalSamples),
-		zap.Int("fields", len(columns)))
+	log.Printf("Schema inference completed: totalSamples=%d, fields=%d", totalSamples, len(columns))
 
 	return columns, nil
 }
@@ -779,18 +762,20 @@ func (job *JSONFileReaderJob) mergeInferredColumns(inferredColumns []map[string]
 
 // JSONFileReaderTask JSON文件读取任务
 type JSONFileReaderTask struct {
-	config    *config.Configuration
+	config    config.Configuration
 	readerJob *JSONFileReaderJob
 	taskFiles []string
+	factory   *factory.DataXFactory
 }
 
 func NewJSONFileReaderTask() *JSONFileReaderTask {
-	return &JSONFileReaderTask{}
+	return &JSONFileReaderTask{
+		factory: factory.GetGlobalFactory(),
+	}
 }
 
-func (task *JSONFileReaderTask) Init(config *config.Configuration) error {
+func (task *JSONFileReaderTask) Init(config config.Configuration) error {
 	task.config = config
-	compLogger := logger.Component().WithComponent("JSONFileReaderTask")
 
 	// 创建ReaderJob来重用配置逻辑
 	task.readerJob = NewJSONFileReaderJob()
@@ -811,7 +796,7 @@ func (task *JSONFileReaderTask) Init(config *config.Configuration) error {
 		task.taskFiles = task.readerJob.resolvedFilePaths
 	}
 
-	compLogger.Info("JSONFileReader task initialized", zap.Int("fileCount", len(task.taskFiles)))
+	log.Printf("JSONFileReader task initialized: fileCount=%d", len(task.taskFiles))
 	return nil
 }
 
@@ -821,7 +806,6 @@ func (task *JSONFileReaderTask) Prepare() error {
 
 func (task *JSONFileReaderTask) StartRead(recordSender plugin.RecordSender) error {
 	totalRecords := int64(0)
-	compLogger := logger.Component().WithComponent("JSONFileReaderTask")
 
 	for _, filePath := range task.taskFiles {
 		records, err := task.readFile(filePath, recordSender)
@@ -829,17 +813,14 @@ func (task *JSONFileReaderTask) StartRead(recordSender plugin.RecordSender) erro
 			return fmt.Errorf("failed to read file %s: %v", filePath, err)
 		}
 		totalRecords += records
-		compLogger.Info("File processing completed",
-			zap.String("file", filePath),
-			zap.Int64("records", records))
+		log.Printf("File processing completed: file=%s, records=%d", filePath, records)
 	}
 
-	compLogger.Info("Read task completed", zap.Int64("totalRecords", totalRecords))
+	log.Printf("Read task completed: totalRecords=%d", totalRecords)
 	return nil
 }
 
 func (task *JSONFileReaderTask) readFile(filePath string, recordSender plugin.RecordSender) (int64, error) {
-	compLogger := logger.Component().WithComponent("JSONFileReaderTask")
 
 	// 打开文件
 	file, err := os.Open(filePath)
@@ -871,9 +852,7 @@ func (task *JSONFileReaderTask) readFile(filePath string, recordSender plugin.Re
 		if err != nil {
 			return 0, fmt.Errorf("failed to detect JSON format: %v", err)
 		}
-		compLogger.Debug("Format detected",
-			zap.String("file", filePath),
-			zap.String("format", string(format)))
+		log.Printf("Format detected: file=%s, format=%s", filePath, string(format))
 
 		// 重新打开文件，因为detectJSONFormat会消耗reader
 		file.Close()
@@ -960,8 +939,7 @@ func (task *JSONFileReaderTask) readJSONFile(reader io.Reader, recordSender plug
 
 		// 每1000条记录输出一次进度
 		if recordCount%1000 == 0 {
-			logger.Component().WithComponent("JSONFileReaderTask").Debug("Reading progress",
-				zap.Int64("records", recordCount))
+			log.Printf("Reading progress: records=%d", recordCount)
 		}
 	}
 
@@ -1001,8 +979,7 @@ func (task *JSONFileReaderTask) readJSONLFile(reader io.Reader, recordSender plu
 
 		// 每1000条记录输出一次进度
 		if recordCount%1000 == 0 {
-			logger.Component().WithComponent("JSONFileReaderTask").Debug("Reading progress",
-				zap.Int64("records", recordCount))
+			log.Printf("Reading progress: records=%d", recordCount)
 		}
 	}
 
@@ -1014,7 +991,7 @@ func (task *JSONFileReaderTask) readJSONLFile(reader io.Reader, recordSender plu
 }
 
 func (task *JSONFileReaderTask) convertJSONToRecord(jsonObj interface{}) (element.Record, error) {
-	record := element.NewRecord()
+	record := task.factory.GetRecordFactory().CreateRecord()
 
 	// 将JSON对象转换为map
 	var objMap map[string]interface{}
@@ -1029,7 +1006,7 @@ func (task *JSONFileReaderTask) convertJSONToRecord(jsonObj interface{}) (elemen
 		}
 		if err := json.Unmarshal(jsonBytes, &objMap); err != nil {
 			// 如果还是失败，直接作为字符串处理
-			record.AddColumn(element.NewStringColumn(string(jsonBytes)))
+			record.AddColumn(task.factory.GetColumnFactory().CreateStringColumn(string(jsonBytes)))
 			return record, nil
 		}
 	}
@@ -1110,13 +1087,15 @@ func (task *JSONFileReaderTask) getNestedValue(jsonObj map[string]interface{}, f
 func (task *JSONFileReaderTask) convertJSONValue(value interface{}, columnType, format string) element.Column {
 	// 检查是否为null值
 	if value == nil {
-		return element.NewStringColumn("")
+		return task.factory.GetColumnFactory().CreateStringColumn("")
 	}
+
+	columnFactory := task.factory.GetColumnFactory()
 
 	// 如果null格式定义了，检查字符串表示
 	if task.readerJob.nullFormat != "" {
 		if str, ok := value.(string); ok && str == task.readerJob.nullFormat {
-			return element.NewStringColumn("")
+			return columnFactory.CreateStringColumn("")
 		}
 	}
 
@@ -1124,49 +1103,49 @@ func (task *JSONFileReaderTask) convertJSONValue(value interface{}, columnType, 
 	case "long":
 		switch v := value.(type) {
 		case int64:
-			return element.NewLongColumn(v)
+			return columnFactory.CreateLongColumn(v)
 		case int:
-			return element.NewLongColumn(int64(v))
+			return columnFactory.CreateLongColumn(int64(v))
 		case float64:
-			return element.NewLongColumn(int64(v))
+			return columnFactory.CreateLongColumn(int64(v))
 		case string:
 			if intVal, err := strconv.ParseInt(v, 10, 64); err == nil {
-				return element.NewLongColumn(intVal)
+				return columnFactory.CreateLongColumn(intVal)
 			}
 		}
-		return element.NewLongColumn(0)
+		return columnFactory.CreateLongColumn(0)
 
 	case "double":
 		switch v := value.(type) {
 		case float64:
-			return element.NewDoubleColumn(v)
+			return columnFactory.CreateDoubleColumn(v)
 		case int64:
-			return element.NewDoubleColumn(float64(v))
+			return columnFactory.CreateDoubleColumn(float64(v))
 		case int:
-			return element.NewDoubleColumn(float64(v))
+			return columnFactory.CreateDoubleColumn(float64(v))
 		case string:
 			if floatVal, err := strconv.ParseFloat(v, 64); err == nil {
-				return element.NewDoubleColumn(floatVal)
+				return columnFactory.CreateDoubleColumn(floatVal)
 			}
 		}
-		return element.NewDoubleColumn(0.0)
+		return columnFactory.CreateDoubleColumn(0.0)
 
 	case "boolean":
 		switch v := value.(type) {
 		case bool:
-			return element.NewBoolColumn(v)
+			return columnFactory.CreateBoolColumn(v)
 		case string:
 			if boolVal, err := strconv.ParseBool(v); err == nil {
-				return element.NewBoolColumn(boolVal)
+				return columnFactory.CreateBoolColumn(boolVal)
 			}
 		}
-		return element.NewBoolColumn(false)
+		return columnFactory.CreateBoolColumn(false)
 
 	case "date":
 		valueStr := fmt.Sprintf("%v", value)
 		if format != "" {
 			if dateVal, err := time.Parse(format, valueStr); err == nil {
-				return element.NewDateColumn(dateVal)
+				return columnFactory.CreateDateColumn(dateVal)
 			}
 		}
 		// 尝试常见的日期格式
@@ -1182,13 +1161,13 @@ func (task *JSONFileReaderTask) convertJSONValue(value interface{}, columnType, 
 		}
 		for _, fmt := range dateFormats {
 			if dateVal, err := time.Parse(fmt, valueStr); err == nil {
-				return element.NewDateColumn(dateVal)
+				return columnFactory.CreateDateColumn(dateVal)
 			}
 		}
-		return element.NewStringColumn(valueStr)
+		return columnFactory.CreateStringColumn(valueStr)
 
 	default: // string
-		return element.NewStringColumn(fmt.Sprintf("%v", value))
+		return columnFactory.CreateStringColumn(fmt.Sprintf("%v", value))
 	}
 }
 

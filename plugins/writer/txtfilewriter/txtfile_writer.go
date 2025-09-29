@@ -16,11 +16,13 @@ import (
 	"github.com/longkeyy/go-datax/common/config"
 	"github.com/longkeyy/go-datax/common/element"
 	"github.com/longkeyy/go-datax/common/plugin"
+	"github.com/longkeyy/go-datax/common/factory"
+	coreplugin "github.com/longkeyy/go-datax/core/registry"
 )
 
 // TxtFileWriterJob 文本文件写入作业
 type TxtFileWriterJob struct {
-	config         *config.Configuration
+	config         config.Configuration
 	path           string
 	fileName       string
 	writeMode      string
@@ -32,6 +34,7 @@ type TxtFileWriterJob struct {
 	header         []string
 	compress       string
 	suffix         string
+	factory        *factory.DataXFactory
 }
 
 func NewTxtFileWriterJob() *TxtFileWriterJob {
@@ -40,10 +43,11 @@ func NewTxtFileWriterJob() *TxtFileWriterJob {
 		encoding:       "UTF-8",
 		nullFormat:     "\\N",
 		fileFormat:     "text",
+		factory:        factory.GetGlobalFactory(),
 	}
 }
 
-func (job *TxtFileWriterJob) Init(config *config.Configuration) error {
+func (job *TxtFileWriterJob) Init(config config.Configuration) error {
 	job.config = config
 
 	// 获取必需参数
@@ -126,11 +130,11 @@ func (job *TxtFileWriterJob) Prepare() error {
 	return nil
 }
 
-func (job *TxtFileWriterJob) Split(adviceNumber int) ([]*config.Configuration, error) {
-	taskConfigs := make([]*config.Configuration, 0)
+func (job *TxtFileWriterJob) Split(mandatoryNumber int) ([]config.Configuration, error) {
+	taskConfigs := make([]config.Configuration, 0)
 
 	// 创建指定数量的任务配置
-	for i := 0; i < adviceNumber; i++ {
+	for i := 0; i < mandatoryNumber; i++ {
 		taskConfig := job.config.Clone()
 		taskConfig.Set("taskId", i)
 		taskConfigs = append(taskConfigs, taskConfig)
@@ -150,20 +154,23 @@ func (job *TxtFileWriterJob) Destroy() error {
 
 // TxtFileWriterTask 文本文件写入任务
 type TxtFileWriterTask struct {
-	config      *config.Configuration
+	config      config.Configuration
 	writerJob   *TxtFileWriterJob
 	outputFile  *os.File
 	writer      io.Writer
 	csvWriter   *csv.Writer
 	recordCount int64
 	taskId      int
+	factory     *factory.DataXFactory
 }
 
 func NewTxtFileWriterTask() *TxtFileWriterTask {
-	return &TxtFileWriterTask{}
+	return &TxtFileWriterTask{
+		factory: factory.GetGlobalFactory(),
+	}
 }
 
-func (task *TxtFileWriterTask) Init(config *config.Configuration) error {
+func (task *TxtFileWriterTask) Init(config config.Configuration) error {
 	task.config = config
 
 	// 创建WriterJob来重用配置逻辑
@@ -265,7 +272,7 @@ func (task *TxtFileWriterTask) StartWrite(recordReceiver plugin.RecordReceiver) 
 	for {
 		record, err := recordReceiver.GetFromReader()
 		if err != nil {
-			if err == plugin.ErrChannelClosed {
+			if err == coreplugin.ErrChannelClosed {
 				break
 			}
 			return fmt.Errorf("failed to receive record: %v", err)

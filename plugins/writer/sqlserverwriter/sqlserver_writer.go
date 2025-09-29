@@ -2,12 +2,14 @@ package sqlserverwriter
 
 import (
 	"fmt"
-	"github.com/longkeyy/go-datax/common/config"
-	"github.com/longkeyy/go-datax/common/element"
-	"github.com/longkeyy/go-datax/common/plugin"
 	"log"
 	"strings"
 
+	"github.com/longkeyy/go-datax/common/config"
+	"github.com/longkeyy/go-datax/common/element"
+	"github.com/longkeyy/go-datax/common/plugin"
+	"github.com/longkeyy/go-datax/common/factory"
+	coreplugin "github.com/longkeyy/go-datax/core/registry"
 	"gorm.io/driver/sqlserver"
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
@@ -19,7 +21,7 @@ const (
 
 // SQLServerWriterJob SQL Server写入作业
 type SQLServerWriterJob struct {
-	config    *config.Configuration
+	config    config.Configuration
 	username  string
 	password  string
 	jdbcUrl   string
@@ -29,15 +31,17 @@ type SQLServerWriterJob struct {
 	postSql   []string
 	session   []string
 	batchSize int
+	factory   *factory.DataXFactory
 }
 
 func NewSQLServerWriterJob() *SQLServerWriterJob {
 	return &SQLServerWriterJob{
 		batchSize: DefaultBatchSize,
+		factory:   factory.GetGlobalFactory(),
 	}
 }
 
-func (job *SQLServerWriterJob) Init(config *config.Configuration) error {
+func (job *SQLServerWriterJob) Init(config config.Configuration) error {
 	job.config = config
 
 	// 获取数据库连接参数
@@ -121,8 +125,8 @@ func (job *SQLServerWriterJob) Prepare() error {
 	return nil
 }
 
-func (job *SQLServerWriterJob) Split(adviceNumber int) ([]*config.Configuration, error) {
-	taskConfigs := make([]*config.Configuration, 0)
+func (job *SQLServerWriterJob) Split(mandatoryNumber int) ([]config.Configuration, error) {
+	taskConfigs := make([]config.Configuration, 0)
 
 	// 为每个表创建一个任务配置
 	for i, table := range job.tables {
@@ -282,21 +286,23 @@ func (job *SQLServerWriterJob) getTableColumns(db *gorm.DB, tableName string) ([
 
 // SQLServerWriterTask SQL Server写入任务
 type SQLServerWriterTask struct {
-	config    *config.Configuration
+	config    config.Configuration
 	writerJob *SQLServerWriterJob
 	db        *gorm.DB
 	tableName string
 	columns   []string
 	records   []element.Record
+	factory   *factory.DataXFactory
 }
 
 func NewSQLServerWriterTask() *SQLServerWriterTask {
 	return &SQLServerWriterTask{
 		records: make([]element.Record, 0),
+		factory: factory.GetGlobalFactory(),
 	}
 }
 
-func (task *SQLServerWriterTask) Init(config *config.Configuration) error {
+func (task *SQLServerWriterTask) Init(config config.Configuration) error {
 	task.config = config
 
 	// 创建WriterJob来重用连接逻辑
@@ -357,7 +363,7 @@ func (task *SQLServerWriterTask) StartWrite(recordReceiver plugin.RecordReceiver
 	for {
 		record, err := recordReceiver.GetFromReader()
 		if err != nil {
-			if err == plugin.ErrChannelClosed {
+			if err == coreplugin.ErrChannelClosed {
 				break
 			}
 			return fmt.Errorf("failed to receive record: %v", err)
@@ -452,44 +458,29 @@ func (task *SQLServerWriterTask) convertColumnValue(column element.Column) inter
 		return nil
 	}
 
+	// 使用新的Column接口方法
 	switch column.GetType() {
 	case element.TypeLong:
-		if longCol, ok := column.(*element.LongColumn); ok {
-			if val, err := longCol.GetAsLong(); err == nil {
-				return val
-			}
-		}
+		val, _ := column.GetAsLong()
+		return val
 	case element.TypeDouble:
-		if doubleCol, ok := column.(*element.DoubleColumn); ok {
-			if val, err := doubleCol.GetAsDouble(); err == nil {
-				return val
-			}
-		}
+		val, _ := column.GetAsDouble()
+		return val
 	case element.TypeString:
-		if stringCol, ok := column.(*element.StringColumn); ok {
-			return stringCol.GetAsString()
-		}
+		return column.GetAsString()
 	case element.TypeDate:
-		if dateCol, ok := column.(*element.DateColumn); ok {
-			if val, err := dateCol.GetAsDate(); err == nil {
-				return val
-			}
-		}
+		val, _ := column.GetAsDate()
+		return val
 	case element.TypeBool:
-		if boolCol, ok := column.(*element.BoolColumn); ok {
-			if val, err := boolCol.GetAsBool(); err == nil {
-				return val
-			}
-		}
+		val, _ := column.GetAsBool()
+		return val
 	case element.TypeBytes:
-		if bytesCol, ok := column.(*element.BytesColumn); ok {
-			if val, err := bytesCol.GetAsBytes(); err == nil {
-				return val
-			}
-		}
+		val, _ := column.GetAsBytes()
+		return val
+	default:
+		// 其他类型作为字符串处理
+		return column.GetAsString()
 	}
-
-	return column.GetAsString()
 }
 
 func (task *SQLServerWriterTask) Post() error {

@@ -10,7 +10,7 @@ import (
 	"gorm.io/gorm"
 )
 
-// DatabaseType 数据库类型枚举
+// DatabaseType enumerates supported database types for unified RDBMS operations.
 type DatabaseType int
 
 const (
@@ -21,7 +21,7 @@ const (
 	Oracle
 )
 
-// String 返回数据库类型的字符串表示
+// String returns the human-readable name for the database type.
 func (dt DatabaseType) String() string {
 	switch dt {
 	case PostgreSQL:
@@ -39,33 +39,31 @@ func (dt DatabaseType) String() string {
 	}
 }
 
-// ConnectionFactory 数据库连接工厂接口
+// ConnectionFactory provides database connection abstraction for different RDBMS types.
 type ConnectionFactory interface {
 	GetConnection() (*gorm.DB, error)
 	GetConnectionInfo() string
 }
 
-// DoPretreatment 执行配置预处理，对应Java版本的doPretreatment方法
-func DoPretreatment(originalConfig *config.Configuration, dbType DatabaseType) error {
+// DoPretreatment validates and preprocesses configuration for RDBMS writers.
+// Key responsibility: resolves wildcard columns and validates schema compatibility.
+func DoPretreatment(originalConfig config.Configuration, dbType DatabaseType) error {
 	compLogger := logger.Component().WithComponent("RDBMSPretreatment")
 	compLogger.Info("Starting RDBMS pretreatment", zap.String("databaseType", dbType.String()))
 
-	// 检查必填配置
 	if err := checkRequiredConfig(originalConfig); err != nil {
 		return err
 	}
 
-	// 检查批次大小配置
 	if err := checkBatchSize(originalConfig); err != nil {
 		return err
 	}
 
-	// 简化连接配置
 	if err := simplifyConnectionConfig(originalConfig); err != nil {
 		return err
 	}
 
-	// 处理列配置 - 这是关键步骤，对应Java版本的dealColumnConf
+	// Critical step: resolve wildcard columns and validate schema compatibility
 	if err := dealColumnConf(originalConfig); err != nil {
 		return err
 	}
@@ -74,8 +72,8 @@ func DoPretreatment(originalConfig *config.Configuration, dbType DatabaseType) e
 	return nil
 }
 
-// checkRequiredConfig 检查必填配置项
-func checkRequiredConfig(config *config.Configuration) error {
+// checkRequiredConfig validates mandatory configuration parameters.
+func checkRequiredConfig(config config.Configuration) error {
 	username := config.GetString("parameter.username")
 	if username == "" {
 		return fmt.Errorf("username is required")
@@ -89,8 +87,8 @@ func checkRequiredConfig(config *config.Configuration) error {
 	return nil
 }
 
-// checkBatchSize 检查批次大小配置
-func checkBatchSize(config *config.Configuration) error {
+// checkBatchSize validates and normalizes batch size configuration.
+func checkBatchSize(config config.Configuration) error {
 	batchSize := config.GetIntWithDefault("parameter.batchSize", 1024)
 	if batchSize < 1 {
 		return fmt.Errorf("batchSize must be greater than 0, got: %d", batchSize)
@@ -100,14 +98,14 @@ func checkBatchSize(config *config.Configuration) error {
 	return nil
 }
 
-// simplifyConnectionConfig 简化连接配置
-func simplifyConnectionConfig(config *config.Configuration) error {
+// simplifyConnectionConfig validates connection parameters and table configuration.
+func simplifyConnectionConfig(config config.Configuration) error {
 	connections := config.GetListConfiguration("parameter.connection")
 	if len(connections) == 0 {
 		return fmt.Errorf("connection configuration is required")
 	}
 
-	// 处理第一个连接配置
+	// Process primary connection configuration
 	conn := connections[0]
 	jdbcUrl := conn.GetString("jdbcUrl")
 	if jdbcUrl == "" {
@@ -119,15 +117,15 @@ func simplifyConnectionConfig(config *config.Configuration) error {
 		return fmt.Errorf("table configuration is required")
 	}
 
-	// 设置表数量标记
+	// Track table count for validation purposes
 	config.Set("tableNumber", len(tables))
 
 	return nil
 }
 
-// dealColumnConf 处理列配置，对应Java版本的dealColumnConf方法
-// 这是解决schema不一致问题的核心方法
-func dealColumnConf(config *config.Configuration) error {
+// dealColumnConf resolves wildcard column specifications to concrete column lists.
+// This is critical for preventing schema mismatches between source and target.
+func dealColumnConf(config config.Configuration) error {
 	compLogger := logger.Component().WithComponent("RDBMSPretreatment")
 	compLogger.Info("Processing column configuration")
 
@@ -184,8 +182,8 @@ func dealColumnConf(config *config.Configuration) error {
 	return nil
 }
 
-// getTargetTableColumns 获取目标表的所有列名
-func getTargetTableColumns(config *config.Configuration) ([]string, error) {
+// getTargetTableColumns queries the target table schema to retrieve column names.
+func getTargetTableColumns(config config.Configuration) ([]string, error) {
 	// 获取数据库连接参数
 	username := config.GetString("parameter.username")
 	password := config.GetString("parameter.password")
@@ -235,7 +233,7 @@ func getTargetTableColumns(config *config.Configuration) ([]string, error) {
 	return columns, nil
 }
 
-// detectDatabaseTypeFromJDBC 从JDBC URL检测数据库类型
+// detectDatabaseTypeFromJDBC identifies database type from JDBC connection string.
 func detectDatabaseTypeFromJDBC(jdbcUrl string) (DatabaseType, error) {
 	if strings.Contains(jdbcUrl, "postgresql") {
 		return PostgreSQL, nil
@@ -251,7 +249,7 @@ func detectDatabaseTypeFromJDBC(jdbcUrl string) (DatabaseType, error) {
 	return PostgreSQL, fmt.Errorf("unsupported database type in JDBC URL: %s", jdbcUrl)
 }
 
-// createConnectionFromJDBC 从JDBC URL创建数据库连接
+// createConnectionFromJDBC establishes database connection using appropriate driver.
 func createConnectionFromJDBC(dbType DatabaseType, jdbcUrl, username, password string) (*gorm.DB, error) {
 	switch dbType {
 	case PostgreSQL:
@@ -264,8 +262,8 @@ func createConnectionFromJDBC(dbType DatabaseType, jdbcUrl, username, password s
 	}
 }
 
-// validateUserColumns 验证用户配置的列是否存在
-func validateUserColumns(config *config.Configuration, userColumns []string) error {
+// validateUserColumns verifies that user-specified columns exist in the target table.
+func validateUserColumns(config config.Configuration, userColumns []string) error {
 	// 获取目标表的所有列
 	allColumns, err := getTargetTableColumns(config)
 	if err != nil {

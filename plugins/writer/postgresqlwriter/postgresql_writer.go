@@ -3,25 +3,28 @@ package postgresqlwriter
 import (
 	"github.com/longkeyy/go-datax/common/config"
 	"github.com/longkeyy/go-datax/common/plugin"
-	"github.com/longkeyy/go-datax/common/rdbms/writer"
+	"github.com/longkeyy/go-datax/common/database/rdbms/writer"
+	"github.com/longkeyy/go-datax/common/factory"
 )
 
 // PostgreSQLWriterJob PostgreSQL写入作业，薄包装层委托给通用RDBMS实现
 type PostgreSQLWriterJob struct {
 	commonRdbmsWriterJob *writer.CommonRdbmsWriterJob
+	factory              *factory.DataXFactory
 }
 
 func NewPostgreSQLWriterJob() *PostgreSQLWriterJob {
 	return &PostgreSQLWriterJob{
 		commonRdbmsWriterJob: writer.NewCommonRdbmsWriterJob(writer.PostgreSQL),
+		factory:              factory.GetGlobalFactory(),
 	}
 }
 
-func (job *PostgreSQLWriterJob) Init(config *config.Configuration) error {
+func (job *PostgreSQLWriterJob) Init(config config.Configuration) error {
 	return job.commonRdbmsWriterJob.Init(config)
 }
 
-func (job *PostgreSQLWriterJob) Split(mandatoryNumber int) ([]*config.Configuration, error) {
+func (job *PostgreSQLWriterJob) Split(mandatoryNumber int) ([]config.Configuration, error) {
 	return job.commonRdbmsWriterJob.Split(mandatoryNumber)
 }
 
@@ -40,15 +43,17 @@ func (job *PostgreSQLWriterJob) Destroy() error {
 // PostgreSQLWriterTask PostgreSQL写入任务，薄包装层委托给通用RDBMS实现
 type PostgreSQLWriterTask struct {
 	commonRdbmsWriterTask *writer.CommonRdbmsWriterTask
+	factory               *factory.DataXFactory
 }
 
 func NewPostgreSQLWriterTask() *PostgreSQLWriterTask {
 	return &PostgreSQLWriterTask{
 		commonRdbmsWriterTask: writer.NewCommonRdbmsWriterTask(writer.PostgreSQL),
+		factory:               factory.GetGlobalFactory(),
 	}
 }
 
-func (task *PostgreSQLWriterTask) Init(config *config.Configuration) error {
+func (task *PostgreSQLWriterTask) Init(config config.Configuration) error {
 	return task.commonRdbmsWriterTask.Init(config)
 }
 

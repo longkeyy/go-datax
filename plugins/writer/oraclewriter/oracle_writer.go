@@ -3,14 +3,15 @@ package oraclewriter
 import (
 	"database/sql"
 	"fmt"
+	"log"
 	"strings"
 
 	"github.com/longkeyy/go-datax/common/config"
 	"github.com/longkeyy/go-datax/common/element"
-	"github.com/longkeyy/go-datax/common/logger"
 	"github.com/longkeyy/go-datax/common/plugin"
+	"github.com/longkeyy/go-datax/common/factory"
+	coreplugin "github.com/longkeyy/go-datax/core/registry"
 	_ "github.com/sijms/go-ora/v2"
-	"go.uber.org/zap"
 )
 
 const (
@@ -30,32 +31,37 @@ type OracleWriterJob struct {
 	postSql      []string
 	session      []string
 	batchSize    int
-	configuration *config.Configuration
+	configuration config.Configuration
+	factory      *factory.DataXFactory
 }
 
 // OracleWriterTask Oracle写入Task
 type OracleWriterTask struct {
 	writerJob     *OracleWriterJob
-	config        *config.Configuration
+	config        config.Configuration
 	db            *sql.DB
 	table         string
 	insertStmt    *sql.Stmt
 	columns       []string
 	batchSize     int
 	insertTimeout int
+	factory       *factory.DataXFactory
 }
 
 func NewOracleWriterJob() *OracleWriterJob {
-	return &OracleWriterJob{}
+	return &OracleWriterJob{
+		factory: factory.GetGlobalFactory(),
+	}
 }
 
 func NewOracleWriterTask() *OracleWriterTask {
-	return &OracleWriterTask{}
+	return &OracleWriterTask{
+		factory: factory.GetGlobalFactory(),
+	}
 }
 
-func (job *OracleWriterJob) Init(config *config.Configuration) error {
-	compLogger := logger.Component().WithComponent("OracleWriterJob")
-	compLogger.Info("Initializing Oracle writer job")
+func (job *OracleWriterJob) Init(config config.Configuration) error {
+	log.Printf("Initializing Oracle writer job")
 
 	job.configuration = config
 
@@ -105,21 +111,16 @@ func (job *OracleWriterJob) Init(config *config.Configuration) error {
 	// 解析批次大小
 	job.batchSize = config.GetIntWithDefault("batchSize", DefaultBatchSize)
 
-	compLogger.Info("Oracle writer job initialized",
-		zap.String("jdbcUrl", job.jdbcUrl),
-		zap.Strings("tables", job.tables),
-		zap.Strings("columns", job.columns),
-		zap.String("writeMode", job.writeMode),
-		zap.Int("batchSize", job.batchSize))
+	log.Printf("Oracle writer job initialized, jdbcUrl: %s, tables: %v, columns: %v, writeMode: %s, batchSize: %d",
+		job.jdbcUrl, job.tables, job.columns, job.writeMode, job.batchSize)
 
 	return nil
 }
 
-func (job *OracleWriterJob) Split(adviceNumber int) ([]*config.Configuration, error) {
-	compLogger := logger.Component().WithComponent("OracleWriterJob")
-	compLogger.Info("Splitting Oracle writer job", zap.Int("adviceNumber", adviceNumber))
+func (job *OracleWriterJob) Split(mandatoryNumber int) ([]config.Configuration, error) {
+	log.Printf("Splitting Oracle writer job, mandatoryNumber: %d", mandatoryNumber)
 
-	var taskConfigs []*config.Configuration
+	var taskConfigs []config.Configuration
 
 	// 为每个表创建一个任务配置
 	for _, table := range job.tables {
@@ -134,13 +135,12 @@ func (job *OracleWriterJob) Split(adviceNumber int) ([]*config.Configuration, er
 		taskConfigs = append(taskConfigs, taskConfig)
 	}
 
-	compLogger.Info("Oracle writer job split completed", zap.Int("taskCount", len(taskConfigs)))
+	log.Printf("Oracle writer job split completed, taskCount: %d", len(taskConfigs))
 	return taskConfigs, nil
 }
 
 func (job *OracleWriterJob) Prepare() error {
-	compLogger := logger.Component().WithComponent("OracleWriterJob")
-	compLogger.Info("Preparing Oracle writer job")
+	log.Printf("Preparing Oracle writer job")
 
 	// 建立连接进行准备工作
 	db, err := job.connect()
@@ -152,20 +152,19 @@ func (job *OracleWriterJob) Prepare() error {
 	// 执行preSql
 	for _, sql := range job.preSql {
 		if sql != "" {
-			compLogger.Info("Executing preSql", zap.String("sql", sql))
+			log.Printf("Executing preSql: %s", sql)
 			if _, err := db.Exec(sql); err != nil {
 				return fmt.Errorf("failed to execute preSql '%s': %v", sql, err)
 			}
 		}
 	}
 
-	compLogger.Info("Oracle writer job prepared successfully")
+	log.Printf("Oracle writer job prepared successfully")
 	return nil
 }
 
 func (job *OracleWriterJob) Post() error {
-	compLogger := logger.Component().WithComponent("OracleWriterJob")
-	compLogger.Info("Post-processing Oracle writer job")
+	log.Printf("Post-processing Oracle writer job")
 
 	// 建立连接进行后处理工作
 	db, err := job.connect()
@@ -177,20 +176,19 @@ func (job *OracleWriterJob) Post() error {
 	// 执行postSql
 	for _, sql := range job.postSql {
 		if sql != "" {
-			compLogger.Info("Executing postSql", zap.String("sql", sql))
+			log.Printf("Executing postSql: %s", sql)
 			if _, err := db.Exec(sql); err != nil {
 				return fmt.Errorf("failed to execute postSql '%s': %v", sql, err)
 			}
 		}
 	}
 
-	compLogger.Info("Oracle writer job post-processing completed")
+	log.Printf("Oracle writer job post-processing completed")
 	return nil
 }
 
 func (job *OracleWriterJob) Destroy() error {
-	compLogger := logger.Component().WithComponent("OracleWriterJob")
-	compLogger.Info("Destroying Oracle writer job")
+	log.Printf("Destroying Oracle writer job")
 	return nil
 }
 
@@ -221,9 +219,8 @@ func (job *OracleWriterJob) connect() (*sql.DB, error) {
 	return db, nil
 }
 
-func (task *OracleWriterTask) Init(config *config.Configuration) error {
-	compLogger := logger.Component().WithComponent("OracleWriterTask")
-	compLogger.Info("Initializing Oracle writer task")
+func (task *OracleWriterTask) Init(config config.Configuration) error {
+	log.Printf("Initializing Oracle writer task")
 
 	task.config = config
 
@@ -265,9 +262,7 @@ func (task *OracleWriterTask) Init(config *config.Configuration) error {
 		return err
 	}
 
-	compLogger.Info("Oracle writer task initialized",
-		zap.String("table", task.table),
-		zap.Int("batchSize", task.batchSize))
+	log.Printf("Oracle writer task initialized, table: %s, batchSize: %d", task.table, task.batchSize)
 
 	return nil
 }
@@ -347,7 +342,6 @@ func (task *OracleWriterTask) Prepare() error {
 }
 
 func (task *OracleWriterTask) StartWrite(recordReceiver plugin.RecordReceiver) error {
-	compLogger := logger.Component().WithComponent("OracleWriterTask")
 
 	defer func() {
 		if task.insertStmt != nil {
@@ -364,7 +358,7 @@ func (task *OracleWriterTask) StartWrite(recordReceiver plugin.RecordReceiver) e
 	for {
 		record, err := recordReceiver.GetFromReader()
 		if err != nil {
-			if err == plugin.ErrChannelClosed {
+			if err == coreplugin.ErrChannelClosed {
 				break
 			}
 			return fmt.Errorf("failed to get record from reader: %v", err)
@@ -381,7 +375,7 @@ func (task *OracleWriterTask) StartWrite(recordReceiver plugin.RecordReceiver) e
 			batch = batch[:0]
 
 			// 输出进度
-			compLogger.Debug("Writing progress", zap.Int64("records", recordCount))
+			log.Printf("Writing progress, records: %d", recordCount)
 		}
 	}
 
@@ -393,12 +387,11 @@ func (task *OracleWriterTask) StartWrite(recordReceiver plugin.RecordReceiver) e
 		recordCount += int64(len(batch))
 	}
 
-	compLogger.Info("Write task completed", zap.Int64("totalRecords", recordCount))
+	log.Printf("Write task completed, totalRecords: %d", recordCount)
 	return nil
 }
 
 func (task *OracleWriterTask) writeBatch(batch []element.Record) error {
-	compLogger := logger.Component().WithComponent("OracleWriterTask")
 
 	// 开始事务
 	tx, err := task.db.Begin()
@@ -421,9 +414,7 @@ func (task *OracleWriterTask) writeBatch(batch []element.Record) error {
 
 		// 执行插入
 		if _, err := stmt.Exec(values...); err != nil {
-			compLogger.Error("Failed to execute insert statement",
-				zap.Error(err),
-				zap.String("table", task.table))
+			log.Printf("Failed to execute insert statement, table: %s, error: %v", task.table, err)
 			return fmt.Errorf("failed to execute insert: %v", err)
 		}
 	}
@@ -437,31 +428,32 @@ func (task *OracleWriterTask) writeBatch(batch []element.Record) error {
 }
 
 func (task *OracleWriterTask) convertValue(column element.Column) interface{} {
-	if column.IsNull() {
+	if column == nil {
 		return nil
 	}
 
-	switch col := column.(type) {
-	case *element.StringColumn:
-		return col.GetAsString()
-	case *element.LongColumn:
-		val, _ := col.GetAsLong()
+	// 使用新的Column接口方法
+	switch column.GetType() {
+	case element.TypeString:
+		return column.GetAsString()
+	case element.TypeLong:
+		val, _ := column.GetAsLong()
 		return val
-	case *element.DoubleColumn:
-		val, _ := col.GetAsDouble()
+	case element.TypeDouble:
+		val, _ := column.GetAsDouble()
 		return val
-	case *element.DateColumn:
-		val, _ := col.GetAsDate()
+	case element.TypeDate:
+		val, _ := column.GetAsDate()
 		return val
-	case *element.BoolColumn:
+	case element.TypeBool:
 		// Oracle中布尔值通常用NUMBER(1)表示
-		val, _ := col.GetAsBool()
+		val, _ := column.GetAsBool()
 		if val {
 			return 1
 		}
 		return 0
-	case *element.BytesColumn:
-		val, _ := col.GetAsBytes()
+	case element.TypeBytes:
+		val, _ := column.GetAsBytes()
 		return val
 	default:
 		// 默认转换为字符串
@@ -474,8 +466,7 @@ func (task *OracleWriterTask) Post() error {
 }
 
 func (task *OracleWriterTask) Destroy() error {
-	compLogger := logger.Component().WithComponent("OracleWriterTask")
-	compLogger.Info("Destroying Oracle writer task")
+	log.Printf("Destroying Oracle writer task")
 
 	if task.insertStmt != nil {
 		task.insertStmt.Close()

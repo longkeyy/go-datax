@@ -21,7 +21,7 @@ const (
 
 // ClickHouseWriterJob ClickHouse写入作业
 type ClickHouseWriterJob struct {
-	config        *config.Configuration
+	config        config.Configuration
 	username      string
 	password      string
 	jdbcUrl       string
@@ -44,7 +44,7 @@ func NewClickHouseWriterJob() *ClickHouseWriterJob {
 	}
 }
 
-func (job *ClickHouseWriterJob) Init(config *config.Configuration) error {
+func (job *ClickHouseWriterJob) Init(config config.Configuration) error {
 	job.config = config
 
 	// 获取必需参数
@@ -202,8 +202,8 @@ func (job *ClickHouseWriterJob) executeSql(sqlList []string) error {
 	return nil
 }
 
-func (job *ClickHouseWriterJob) Split(adviceNumber int) ([]*config.Configuration, error) {
-	taskConfigs := make([]*config.Configuration, 0)
+func (job *ClickHouseWriterJob) Split(adviceNumber int) ([]config.Configuration, error) {
+	taskConfigs := make([]config.Configuration, 0)
 
 	// 创建指定数量的任务配置
 	for i := 0; i < adviceNumber; i++ {
@@ -233,7 +233,7 @@ func (job *ClickHouseWriterJob) Destroy() error {
 
 // ClickHouseWriterTask ClickHouse写入任务
 type ClickHouseWriterTask struct {
-	config      *config.Configuration
+	config      config.Configuration
 	writerJob   *ClickHouseWriterJob
 	conn        clickhouse.Conn
 	buffer      [][]interface{}
@@ -247,7 +247,7 @@ func NewClickHouseWriterTask() *ClickHouseWriterTask {
 	}
 }
 
-func (task *ClickHouseWriterTask) Init(config *config.Configuration) error {
+func (task *ClickHouseWriterTask) Init(config config.Configuration) error {
 	task.config = config
 
 	// 创建WriterJob来重用配置逻辑
@@ -309,7 +309,7 @@ func (task *ClickHouseWriterTask) StartWrite(recordReceiver plugin.RecordReceive
 	for {
 		record, err := recordReceiver.GetFromReader()
 		if err != nil {
-			if err == plugin.ErrChannelClosed {
+			if err.Error() == "channel is closed" {
 				break
 			}
 			return fmt.Errorf("failed to receive record: %v", err)
@@ -357,7 +357,7 @@ func (task *ClickHouseWriterTask) recordToRow(record element.Record) []interface
 
 	for i := 0; i < len(task.writerJob.columns) && i < columnCount; i++ {
 		column := record.GetColumn(i)
-		if column == nil || column.IsNull() {
+		if column == nil {
 			row[i] = nil
 			continue
 		}

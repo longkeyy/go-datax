@@ -8,8 +8,9 @@ import (
 
 	"github.com/longkeyy/go-datax/common/config"
 	"github.com/longkeyy/go-datax/common/element"
-	"github.com/longkeyy/go-datax/common/logger"
 	"github.com/longkeyy/go-datax/common/plugin"
+	"github.com/longkeyy/go-datax/common/logger"
+	"github.com/longkeyy/go-datax/common/factory"
 	"go.uber.org/zap"
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
@@ -22,7 +23,7 @@ const (
 
 // PostgreSQLReaderJob PostgreSQL读取作业
 type PostgreSQLReaderJob struct {
-	config   *config.Configuration
+	config   config.Configuration
 	username string
 	password string
 	jdbcUrls []string
@@ -31,13 +32,16 @@ type PostgreSQLReaderJob struct {
 	where    string
 	splitPk  string
 	querySql string // 支持自定义查询SQL
+	factory  *factory.DataXFactory
 }
 
 func NewPostgreSQLReaderJob() *PostgreSQLReaderJob {
-	return &PostgreSQLReaderJob{}
+	return &PostgreSQLReaderJob{
+		factory: factory.GetGlobalFactory(),
+	}
 }
 
-func (job *PostgreSQLReaderJob) Init(config *config.Configuration) error {
+func (job *PostgreSQLReaderJob) Init(config config.Configuration) error {
 	job.config = config
 
 	// 获取数据库连接参数
@@ -67,12 +71,10 @@ func (job *PostgreSQLReaderJob) Init(config *config.Configuration) error {
 	job.splitPk = config.GetString("parameter.splitPk")
 	job.querySql = config.GetString("parameter.querySql")
 
-	compLogger := logger.Component().WithComponent("PostgreSQLReaderJob")
-
 	// 检查配置模式：querySql 或 table/column 模式
 	if job.querySql != "" {
 		// querySql模式：直接使用用户提供的SQL查询
-		compLogger.Info("Initialized with querySql mode")
+		logger.Component().WithComponent("PostgreSQLReader").Info("PostgreSQL Reader initialized with querySql mode")
 	} else {
 		// table/column模式：需要table和column配置
 		job.tables = conn.GetStringList("table")
@@ -84,17 +86,16 @@ func (job *PostgreSQLReaderJob) Init(config *config.Configuration) error {
 		if len(job.columns) == 0 {
 			return fmt.Errorf("column is required when querySql is not specified")
 		}
-		compLogger.Info("Initialized with table/column mode",
-			zap.Strings("tables", job.tables),
-			zap.Strings("columns", job.columns))
+		logger.Component().WithComponent("PostgreSQLReader").Info("PostgreSQL Reader initialized with table/column mode",
+			zap.Any("tables", job.tables),
+			zap.Any("columns", job.columns))
 	}
 
 	return nil
 }
 
-func (job *PostgreSQLReaderJob) Split(adviceNumber int) ([]*config.Configuration, error) {
-	compLogger := logger.Component().WithComponent("PostgreSQLReaderJob")
-	taskConfigs := make([]*config.Configuration, 0)
+func (job *PostgreSQLReaderJob) Split(adviceNumber int) ([]config.Configuration, error) {
+	taskConfigs := make([]config.Configuration, 0)
 
 	// 如果使用querySql模式或没有设置splitPk，则不进行分片，使用单个任务
 	if job.querySql != "" || job.splitPk == "" {
@@ -102,9 +103,9 @@ func (job *PostgreSQLReaderJob) Split(adviceNumber int) ([]*config.Configuration
 		taskConfig.Set("taskId", 0)
 		taskConfigs = append(taskConfigs, taskConfig)
 		if job.querySql != "" {
-			compLogger.Info("Using querySql mode, single task")
+			logger.Component().WithComponent("PostgreSQLReader").Info("Using querySql mode, single task")
 		} else {
-			compLogger.Info("No splitPk specified, using single task")
+			logger.Component().WithComponent("PostgreSQLReader").Info("No splitPk specified, using single task")
 		}
 		return taskConfigs, nil
 	}
@@ -112,7 +113,8 @@ func (job *PostgreSQLReaderJob) Split(adviceNumber int) ([]*config.Configuration
 	// 如果设置了splitPk，尝试进行分片
 	ranges, err := job.calculateSplitRanges(adviceNumber)
 	if err != nil {
-		compLogger.Warn("Failed to calculate split ranges, fallback to single task", zap.Error(err))
+		logger.Component().WithComponent("PostgreSQLReader").Warn("Failed to calculate split ranges, fallback to single task",
+			zap.Error(err))
 		taskConfig := job.config.Clone()
 		taskConfig.Set("taskId", 0)
 		taskConfigs = append(taskConfigs, taskConfig)
@@ -127,7 +129,7 @@ func (job *PostgreSQLReaderJob) Split(adviceNumber int) ([]*config.Configuration
 		taskConfigs = append(taskConfigs, taskConfig)
 	}
 
-	compLogger.Info("Split tasks based on splitPk",
+	logger.Component().WithComponent("PostgreSQLReader").Info("Split into tasks based on splitPk",
 		zap.Int("taskCount", len(taskConfigs)),
 		zap.String("splitPk", job.splitPk))
 	return taskConfigs, nil
@@ -254,17 +256,17 @@ func (job *PostgreSQLReaderJob) calculateNumericSplitRanges(db *gorm.DB, adviceN
 
 // calculateTextSplitRanges 计算文本类型的分片范围
 func (job *PostgreSQLReaderJob) calculateTextSplitRanges(db *gorm.DB, adviceNumber int, columnType string) ([]map[string]interface{}, error) {
-	compLogger := logger.Component().WithComponent("PostgreSQLReaderJob")
-
 	// 策略1: 尝试字典序范围切分
 	ranges, err := job.calculateTextDictionarySplitRanges(db, adviceNumber)
 	if err != nil {
-		compLogger.Debug("Dictionary-based splitting failed, trying offset-based splitting", zap.Error(err))
+		logger.Component().WithComponent("PostgreSQLReader").Warn("Dictionary-based splitting failed, trying offset-based splitting",
+			zap.Error(err))
 
 		// 策略2: 使用OFFSET/LIMIT切分
 		ranges, err = job.calculateOffsetSplitRanges(db, adviceNumber)
 		if err != nil {
-			compLogger.Debug("Offset-based splitting failed, falling back to hash-based splitting", zap.Error(err))
+			logger.Component().WithComponent("PostgreSQLReader").Warn("Offset-based splitting failed, falling back to hash-based splitting",
+				zap.Error(err))
 			// 策略3: hash切分（兜底）
 			return job.calculateHashSplitRanges(adviceNumber), nil
 		}
@@ -319,11 +321,9 @@ func (job *PostgreSQLReaderJob) calculateTextDictionarySplitRanges(db *gorm.DB, 
 		return nil, fmt.Errorf("failed to get total count: %v", err)
 	}
 
-	compLogger := logger.Component().WithComponent("PostgreSQLReaderJob")
-
 	// 对于大数据集或者需要更多分片时，优先使用OFFSET切分确保均匀分布
 	if totalCount > int64(adviceNumber*2000) || adviceNumber > 4 {
-		compLogger.Info("Using offset-based splitting for better data distribution",
+		logger.Component().WithComponent("PostgreSQLReader").Info("Using offset-based splitting for better data distribution",
 			zap.Int64("totalCount", totalCount),
 			zap.Int("channels", adviceNumber))
 		return job.calculateOffsetSplitRanges(db, adviceNumber)
@@ -631,16 +631,19 @@ func (job *PostgreSQLReaderJob) Destroy() error {
 
 // PostgreSQLReaderTask PostgreSQL读取任务
 type PostgreSQLReaderTask struct {
-	config    *config.Configuration
+	config    config.Configuration
 	readerJob *PostgreSQLReaderJob
 	db        *gorm.DB
+	factory   *factory.DataXFactory
 }
 
 func NewPostgreSQLReaderTask() *PostgreSQLReaderTask {
-	return &PostgreSQLReaderTask{}
+	return &PostgreSQLReaderTask{
+		factory: factory.GetGlobalFactory(),
+	}
 }
 
-func (task *PostgreSQLReaderTask) Init(config *config.Configuration) error {
+func (task *PostgreSQLReaderTask) Init(config config.Configuration) error {
 	task.config = config
 
 	// 创建ReaderJob来重用连接逻辑
@@ -660,7 +663,6 @@ func (task *PostgreSQLReaderTask) Init(config *config.Configuration) error {
 }
 
 func (task *PostgreSQLReaderTask) StartRead(recordSender plugin.RecordSender) error {
-	compLogger := logger.Component().WithComponent("PostgreSQLReaderTask")
 
 	defer func() {
 		if sqlDB, err := task.db.DB(); err == nil {
@@ -674,7 +676,8 @@ func (task *PostgreSQLReaderTask) StartRead(recordSender plugin.RecordSender) er
 		return err
 	}
 
-	compLogger.Info("Executing query", zap.String("query", query))
+	logger.Component().WithComponent("PostgreSQLReader").Info("Executing query",
+		zap.String("query", query))
 
 	// 执行查询
 	rows, err := task.db.Raw(query).Rows()
@@ -705,7 +708,7 @@ func (task *PostgreSQLReaderTask) StartRead(recordSender plugin.RecordSender) er
 		}
 
 		// 创建记录
-		record := element.NewRecord()
+		record := task.factory.GetRecordFactory().CreateRecord()
 		for _, value := range values {
 			column := task.convertToColumn(value)
 			record.AddColumn(column)
@@ -718,11 +721,13 @@ func (task *PostgreSQLReaderTask) StartRead(recordSender plugin.RecordSender) er
 
 		recordCount++
 		if recordCount%1000 == 0 {
-			compLogger.Info("Progress update", zap.Int("recordsRead", recordCount))
+			logger.Component().WithComponent("PostgreSQLReader").Info("Reading progress",
+				zap.Int("recordCount", recordCount))
 		}
 	}
 
-	compLogger.Info("Read task completed", zap.Int("totalRecords", recordCount))
+	logger.Component().WithComponent("PostgreSQLReader").Info("Reading completed",
+		zap.Int("totalRecords", recordCount))
 	return nil
 }
 
@@ -840,8 +845,8 @@ func (task *PostgreSQLReaderTask) buildTextDictionaryCondition(rangeMap map[stri
 
 // buildOffsetCondition 构建OFFSET/LIMIT的分片条件
 func (task *PostgreSQLReaderTask) buildOffsetCondition(rangeMap map[string]interface{}) (string, string, string) {
-	offset := rangeMap["offset"].(int64)
-	limit := rangeMap["limit"].(int64)
+	offset := convertToInt64(rangeMap["offset"])
+	limit := convertToInt64(rangeMap["limit"])
 
 	orderBy := task.readerJob.splitPk // 按splitPk排序保证稳定的分片
 	limitClause := fmt.Sprintf("LIMIT %d OFFSET %d", limit, offset)
@@ -851,8 +856,8 @@ func (task *PostgreSQLReaderTask) buildOffsetCondition(rangeMap map[string]inter
 
 // buildHashCondition 构建Hash分片条件
 func (task *PostgreSQLReaderTask) buildHashCondition(rangeMap map[string]interface{}) (string, string, string) {
-	taskId := rangeMap["taskId"].(int)
-	total := rangeMap["total"].(int)
+	taskId := convertToInt(rangeMap["taskId"])
+	total := convertToInt(rangeMap["total"])
 
 	// 使用PostgreSQL的hashtext函数
 	condition := fmt.Sprintf("MOD(ABS(HASHTEXT(%s)), %d) = %d", task.readerJob.splitPk, total, taskId)
@@ -860,32 +865,33 @@ func (task *PostgreSQLReaderTask) buildHashCondition(rangeMap map[string]interfa
 }
 
 func (task *PostgreSQLReaderTask) convertToColumn(value interface{}) element.Column {
+	columnFactory := task.factory.GetColumnFactory()
 	if value == nil {
-		return element.NewStringColumn("")
+		return columnFactory.CreateStringColumn("")
 	}
 
 	switch v := value.(type) {
 	case int64:
-		return element.NewLongColumn(v)
+		return columnFactory.CreateLongColumn(v)
 	case int32:
-		return element.NewLongColumn(int64(v))
+		return columnFactory.CreateLongColumn(int64(v))
 	case int:
-		return element.NewLongColumn(int64(v))
+		return columnFactory.CreateLongColumn(int64(v))
 	case float64:
-		return element.NewDoubleColumn(v)
+		return columnFactory.CreateDoubleColumn(v)
 	case float32:
-		return element.NewDoubleColumn(float64(v))
+		return columnFactory.CreateDoubleColumn(float64(v))
 	case string:
-		return element.NewStringColumn(v)
+		return columnFactory.CreateStringColumn(v)
 	case []byte:
-		return element.NewStringColumn(string(v))
+		return columnFactory.CreateStringColumn(string(v))
 	case time.Time:
-		return element.NewDateColumn(v)
+		return columnFactory.CreateDateColumn(v)
 	case bool:
-		return element.NewBoolColumn(v)
+		return columnFactory.CreateBoolColumn(v)
 	default:
 		// 其他类型转换为字符串
-		return element.NewStringColumn(fmt.Sprintf("%v", v))
+		return columnFactory.CreateStringColumn(fmt.Sprintf("%v", v))
 	}
 }
 
@@ -900,4 +906,36 @@ func (task *PostgreSQLReaderTask) Destroy() error {
 		}
 	}
 	return nil
+}
+
+// convertToInt64 safely converts interface{} to int64, handling both int64 and float64 types
+func convertToInt64(v interface{}) int64 {
+	switch val := v.(type) {
+	case int64:
+		return val
+	case float64:
+		return int64(val)
+	case int:
+		return int64(val)
+	case float32:
+		return int64(val)
+	default:
+		return 0
+	}
+}
+
+// convertToInt safely converts interface{} to int, handling both int and float64 types
+func convertToInt(v interface{}) int {
+	switch val := v.(type) {
+	case int:
+		return val
+	case float64:
+		return int(val)
+	case int64:
+		return int(val)
+	case float32:
+		return int(val)
+	default:
+		return 0
+	}
 }

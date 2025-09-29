@@ -5,21 +5,24 @@ import (
 	"sync"
 	"time"
 
+	"github.com/longkeyy/go-datax/common/plugin"
 	"github.com/longkeyy/go-datax/common/config"
 	"github.com/longkeyy/go-datax/common/logger"
-	"github.com/longkeyy/go-datax/common/plugin"
 	"github.com/longkeyy/go-datax/common/statistics"
-	"github.com/longkeyy/go-datax/core/taskgroup"
+	"github.com/longkeyy/go-datax/core/task"
+	coreplugin "github.com/longkeyy/go-datax/core/registry"
 	"go.uber.org/zap"
 )
 
-// JobContainer 作业容器，负责作业的生命周期管理
+// JobContainer manages the complete lifecycle of a data transfer job,
+// coordinating between reader and writer plugins while providing
+// real-time statistics and error handling.
 type JobContainer struct {
-	configuration   *config.Configuration
+	configuration   config.Configuration
 	readerPlugin    string
 	writerPlugin    string
 	needChannels    int
-	communicator    *statistics.JobContainerCommunicator
+	communicator    *statistics.JobCommunicator
 	schedulerReporter *statistics.SchedulerReporter
 	totalStage      int
 	startTimeStamp  int64
@@ -28,26 +31,33 @@ type JobContainer struct {
 	endTransferTimeStamp   int64
 }
 
-func NewJobContainer(configuration *config.Configuration) *JobContainer {
-	communicator := statistics.NewJobContainerCommunicator(configuration)
+func NewJobContainer(configuration config.Configuration) *JobContainer {
+	// Bridge new configuration format to legacy statistics system
+	oldConfig := convertNewConfigToOldConfig(configuration)
+	communicator := statistics.NewJobCommunicator(oldConfig)
 	return &JobContainer{
 		configuration: configuration,
 		communicator:  communicator,
 	}
 }
 
+// convertNewConfigToOldConfig provides compatibility bridge for statistics system.
+// Returns config directly since we now use unified interfaces.
+func convertNewConfigToOldConfig(newConfig config.Configuration) config.Configuration {
+	return newConfig
+}
+
 func (jc *JobContainer) Start() error {
 	appLogger := logger.App()
 	appLogger.Info("DataX JobContainer starts job")
 
-	// 记录开始时间
 	startTime := time.Now()
 	jc.startTimeStamp = startTime.UnixMilli()
 	var err error
 	hasException := false
 
 	defer func() {
-		// 停止调度器汇报
+		// Ensure scheduler reporter cleanup on function exit
 		if jc.schedulerReporter != nil {
 			jc.schedulerReporter.Stop()
 		}
@@ -57,7 +67,6 @@ func (jc *JobContainer) Start() error {
 		duration := endTime.Sub(startTime)
 
 		if !hasException {
-			// 输出最终统计信息
 			jc.logStatistics()
 		}
 
@@ -71,49 +80,40 @@ func (jc *JobContainer) Start() error {
 		}
 	}()
 
-	// 初始化
 	if err = jc.init(); err != nil {
 		hasException = true
 		return fmt.Errorf("job initialization failed: %v", err)
 	}
 
-	// 准备阶段
 	if err = jc.prepare(); err != nil {
 		hasException = true
 		return fmt.Errorf("job preparation failed: %v", err)
 	}
 
-	// 拆分任务
 	readerTaskConfigs, writerTaskConfigs, err := jc.split()
 	if err != nil {
 		hasException = true
 		return fmt.Errorf("job split failed: %v", err)
 	}
 
-	// 设置总阶段数
 	jc.totalStage = len(readerTaskConfigs)
 
-	// 初始化SchedulerReporter进行实时汇报
+	// Setup real-time progress reporting with configurable intervals
 	reportInterval := time.Duration(jc.configuration.GetIntWithDefault("core.container.job.reportInterval", 30000)) * time.Millisecond
 	sleepInterval := time.Duration(jc.configuration.GetIntWithDefault("core.container.job.sleepInterval", 10000)) * time.Millisecond
 	jc.schedulerReporter = statistics.NewSchedulerReporter(jc.communicator, reportInterval, sleepInterval, jc.totalStage)
 
-	// 启动实时汇报
 	jc.schedulerReporter.Start()
 
-	// 记录传输开始时间
 	jc.startTransferTimeStamp = time.Now().UnixMilli()
 
-	// 调度执行
 	if err = jc.schedule(readerTaskConfigs, writerTaskConfigs); err != nil {
 		hasException = true
 		return fmt.Errorf("job schedule failed: %v", err)
 	}
 
-	// 记录传输结束时间
 	jc.endTransferTimeStamp = time.Now().UnixMilli()
 
-	// 后处理
 	if err = jc.post(); err != nil {
 		hasException = true
 		return fmt.Errorf("job post processing failed: %v", err)
@@ -123,13 +123,12 @@ func (jc *JobContainer) Start() error {
 }
 
 func (jc *JobContainer) init() error {
-	// 从配置中获取插件信息
 	contentList := jc.configuration.GetListConfiguration("job.content")
 	if len(contentList) == 0 {
 		return fmt.Errorf("job.content is empty")
 	}
 
-	// 目前只支持单个content
+	// Currently limited to single content configuration for simplicity
 	content := contentList[0]
 	jc.readerPlugin = content.GetString("reader.name")
 	jc.writerPlugin = content.GetString("writer.name")
@@ -141,7 +140,7 @@ func (jc *JobContainer) init() error {
 		return fmt.Errorf("writer plugin name is required")
 	}
 
-	// 设置通道数
+	// Configure parallel channels, defaulting to 1 for safety
 	jc.needChannels = jc.configuration.GetIntWithDefault("job.setting.speed.channel", 1)
 	if jc.needChannels <= 0 {
 		jc.needChannels = 1
@@ -157,11 +156,10 @@ func (jc *JobContainer) init() error {
 }
 
 func (jc *JobContainer) prepare() error {
-	// 执行Writer Job的prepare操作
+	// Prepare phase allows writer to setup tables, validate schema, etc.
 	contentList := jc.configuration.GetListConfiguration("job.content")
 	content := contentList[0]
 
-	// 创建Writer Job并执行prepare
 	writerJob, err := jc.createWriterJob(content.GetConfiguration("writer"))
 	if err != nil {
 		return fmt.Errorf("failed to create writer job for prepare: %v", err)
@@ -174,11 +172,10 @@ func (jc *JobContainer) prepare() error {
 	return nil
 }
 
-func (jc *JobContainer) split() ([]*config.Configuration, []*config.Configuration, error) {
+func (jc *JobContainer) split() ([]config.Configuration, []config.Configuration, error) {
 	contentList := jc.configuration.GetListConfiguration("job.content")
 	content := contentList[0]
 
-	// 创建Reader Job实例进行split
 	readerJob, err := jc.createReaderJob(content.GetConfiguration("reader"))
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to create reader job: %v", err)
@@ -189,7 +186,6 @@ func (jc *JobContainer) split() ([]*config.Configuration, []*config.Configuratio
 		return nil, nil, fmt.Errorf("reader split failed: %v", err)
 	}
 
-	// 创建Writer Job实例进行split
 	writerJob, err := jc.createWriterJob(content.GetConfiguration("writer"))
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to create writer job: %v", err)
@@ -208,7 +204,7 @@ func (jc *JobContainer) split() ([]*config.Configuration, []*config.Configuratio
 	return readerTaskConfigs, writerTaskConfigs, nil
 }
 
-func (jc *JobContainer) schedule(readerTaskConfigs, writerTaskConfigs []*config.Configuration) error {
+func (jc *JobContainer) schedule(readerTaskConfigs, writerTaskConfigs []config.Configuration) error {
 	if len(readerTaskConfigs) != len(writerTaskConfigs) {
 		return fmt.Errorf("reader tasks (%d) and writer tasks (%d) count mismatch",
 			len(readerTaskConfigs), len(writerTaskConfigs))
@@ -218,13 +214,13 @@ func (jc *JobContainer) schedule(readerTaskConfigs, writerTaskConfigs []*config.
 	appLogger := logger.App()
 	appLogger.Info("Starting task groups", zap.Int("taskGroups", taskCount))
 
-	// 为TaskGroup注册Communication
+	// Pre-register communication channels for each task group to enable statistics collection
 	for i := 0; i < taskCount; i++ {
 		communication := statistics.NewCommunication()
 		jc.communicator.RegisterCommunication(i, communication)
 	}
 
-	// 创建TaskGroup并发执行
+	// Execute task groups concurrently with proper error handling and statistics merging
 	var wg sync.WaitGroup
 	errChan := make(chan error, taskCount)
 
@@ -233,7 +229,7 @@ func (jc *JobContainer) schedule(readerTaskConfigs, writerTaskConfigs []*config.
 		go func(index int) {
 			defer wg.Done()
 			defer func() {
-				// 标记任务完成
+				// Mark task completion and update statistics regardless of success/failure
 				if comm := jc.communicator.GetCommunication(index); comm != nil {
 					comm.IncreaseCounter(statistics.STAGE, 1)
 					if comm.GetState() != statistics.StateFailed {
@@ -244,21 +240,19 @@ func (jc *JobContainer) schedule(readerTaskConfigs, writerTaskConfigs []*config.
 
 			taskGroupConfig := jc.configuration.Clone()
 			taskGroupConfig.Set("taskGroup.id", index)
-			taskGroupConfig.Set("taskGroup.reader", readerTaskConfigs[index].Get(""))
-			taskGroupConfig.Set("taskGroup.writer", writerTaskConfigs[index].Get(""))
+			taskGroupConfig.Set("taskGroup.reader", readerTaskConfigs[index])
+			taskGroupConfig.Set("taskGroup.writer", writerTaskConfigs[index])
 
-			taskGroupContainer := taskgroup.NewTaskGroupContainer(taskGroupConfig, index)
+			taskGroupContainer := task.NewTaskGroupContainer(taskGroupConfig, index)
 			if err := taskGroupContainer.Start(readerTaskConfigs[index], writerTaskConfigs[index]); err != nil {
-				// 标记任务失败
 				if comm := jc.communicator.GetCommunication(index); comm != nil {
 					comm.SetState(statistics.StateFailed)
 					comm.SetThrowable(err)
 				}
 				errChan <- fmt.Errorf("taskGroup %d failed: %v", index, err)
 			} else {
-				// 任务成功，合并TaskGroupContainer的统计信息到JobContainer
+				// Merge task group statistics into job-level statistics for reporting
 				if jobComm := jc.communicator.GetCommunication(index); jobComm != nil && taskGroupContainer != nil {
-					// 获取TaskGroupContainer的Communication并合并
 					if tgComm := taskGroupContainer.GetCommunication(); tgComm != nil {
 						jobComm.MergeFrom(tgComm)
 					}
@@ -270,7 +264,7 @@ func (jc *JobContainer) schedule(readerTaskConfigs, writerTaskConfigs []*config.
 	wg.Wait()
 	close(errChan)
 
-	// 检查是否有错误
+	// Fail fast if any task group encountered errors
 	for err := range errChan {
 		return err
 	}
@@ -279,11 +273,12 @@ func (jc *JobContainer) schedule(readerTaskConfigs, writerTaskConfigs []*config.
 }
 
 func (jc *JobContainer) post() error {
-	// 后处理逻辑
+	// Reserved for cleanup operations like connection closing, temp file removal
 	return nil
 }
 
-// logStatistics 输出最终统计信息
+// logStatistics outputs comprehensive job execution metrics including
+// throughput, timing, and error statistics for monitoring and debugging.
 func (jc *JobContainer) logStatistics() {
 	totalCosts := (jc.endTimeStamp - jc.startTimeStamp) / 1000
 	transferCosts := (jc.endTransferTimeStamp - jc.startTransferTimeStamp) / 1000
@@ -298,14 +293,13 @@ func (jc *JobContainer) logStatistics() {
 	communication := jc.communicator.Collect()
 	communication.SetTimestamp(jc.endTimeStamp)
 
-	// 计算速度
+	// Calculate throughput metrics based on actual transfer time to avoid division by zero
 	byteSpeedPerSecond := communication.GetLongCounter(statistics.READ_SUCCEED_BYTES) / transferCosts
 	recordSpeedPerSecond := communication.GetLongCounter(statistics.READ_SUCCEED_RECORDS) / transferCosts
 
 	communication.SetLongCounter(statistics.BYTE_SPEED, byteSpeedPerSecond)
 	communication.SetLongCounter(statistics.RECORD_SPEED, recordSpeedPerSecond)
 
-	// 汇报最终统计
 	jc.communicator.Report(communication)
 
 	appLogger := logger.App()
@@ -318,7 +312,7 @@ func (jc *JobContainer) logStatistics() {
 	appLogger.Info("Total Read Records", zap.Int64("totalReadRecords", statistics.DefaultCommunicationTool.GetTotalReadRecords(communication)))
 	appLogger.Info("Total Error Records", zap.Int64("totalErrorRecords", statistics.DefaultCommunicationTool.GetTotalErrorRecords(communication)))
 
-	// 输出Transformer统计
+	// Include transformer metrics only when transformations were actually performed
 	if communication.GetLongCounter(statistics.TRANSFORMER_SUCCEED_RECORDS) > 0 ||
 		communication.GetLongCounter(statistics.TRANSFORMER_FAILED_RECORDS) > 0 ||
 		communication.GetLongCounter(statistics.TRANSFORMER_FILTER_RECORDS) > 0 {
@@ -331,13 +325,14 @@ func (jc *JobContainer) logStatistics() {
 	appLogger.Info("==============================================================================================")
 }
 
-func (jc *JobContainer) createReaderJob(readerConfig *config.Configuration) (plugin.ReaderJob, error) {
+func (jc *JobContainer) createReaderJob(readerConfig config.Configuration) (plugin.ReaderJob, error) {
 	readerName := readerConfig.GetString("name")
-	readerJob, err := plugin.CreateReaderJob(readerName)
+	readerJobFactory, err := coreplugin.GetReaderJobFactory(readerName)
 	if err != nil {
 		return nil, err
 	}
 
+	readerJob := readerJobFactory.CreateReaderJob()
 	if err := readerJob.Init(readerConfig); err != nil {
 		return nil, fmt.Errorf("failed to init reader job: %v", err)
 	}
@@ -345,13 +340,14 @@ func (jc *JobContainer) createReaderJob(readerConfig *config.Configuration) (plu
 	return readerJob, nil
 }
 
-func (jc *JobContainer) createWriterJob(writerConfig *config.Configuration) (plugin.WriterJob, error) {
+func (jc *JobContainer) createWriterJob(writerConfig config.Configuration) (plugin.WriterJob, error) {
 	writerName := writerConfig.GetString("name")
-	writerJob, err := plugin.CreateWriterJob(writerName)
+	writerJobFactory, err := coreplugin.GetWriterJobFactory(writerName)
 	if err != nil {
 		return nil, err
 	}
 
+	writerJob := writerJobFactory.CreateWriterJob()
 	if err := writerJob.Init(writerConfig); err != nil {
 		return nil, fmt.Errorf("failed to init writer job: %v", err)
 	}
@@ -359,19 +355,20 @@ func (jc *JobContainer) createWriterJob(writerConfig *config.Configuration) (plu
 	return writerJob, nil
 }
 
-// MockReaderJob 模拟Reader Job实现
+// MockReaderJob provides a test implementation for reader plugins.
+// Used for testing job container logic without external dependencies.
 type MockReaderJob struct {
-	config *config.Configuration
+	config config.Configuration
 }
 
-func (m *MockReaderJob) Init(config *config.Configuration) error {
+func (m *MockReaderJob) Init(config config.Configuration) error {
 	m.config = config
 	return nil
 }
 
-func (m *MockReaderJob) Split(adviceNumber int) ([]*config.Configuration, error) {
-	// 简单拆分：每个任务使用相同配置
-	configs := make([]*config.Configuration, adviceNumber)
+func (m *MockReaderJob) Split(adviceNumber int) ([]config.Configuration, error) {
+	// Uniform split strategy - each task gets identical configuration with unique task ID
+	configs := make([]config.Configuration, adviceNumber)
 	for i := 0; i < adviceNumber; i++ {
 		configs[i] = m.config.Clone()
 		configs[i].Set("taskId", i)
@@ -387,19 +384,20 @@ func (m *MockReaderJob) Destroy() error {
 	return nil
 }
 
-// MockWriterJob 模拟Writer Job实现
+// MockWriterJob provides a test implementation for writer plugins.
+// Used for testing job container logic without external dependencies.
 type MockWriterJob struct {
-	config *config.Configuration
+	config config.Configuration
 }
 
-func (m *MockWriterJob) Init(config *config.Configuration) error {
+func (m *MockWriterJob) Init(config config.Configuration) error {
 	m.config = config
 	return nil
 }
 
-func (m *MockWriterJob) Split(mandatoryNumber int) ([]*config.Configuration, error) {
-	// 简单拆分：每个任务使用相同配置
-	configs := make([]*config.Configuration, mandatoryNumber)
+func (m *MockWriterJob) Split(mandatoryNumber int) ([]config.Configuration, error) {
+	// Uniform split strategy - each task gets identical configuration with unique task ID
+	configs := make([]config.Configuration, mandatoryNumber)
 	for i := 0; i < mandatoryNumber; i++ {
 		configs[i] = m.config.Clone()
 		configs[i].Set("taskId", i)

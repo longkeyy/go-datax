@@ -3,13 +3,17 @@ package streamwriter
 import (
 	"bufio"
 	"fmt"
-	"github.com/longkeyy/go-datax/common/config"
-	"github.com/longkeyy/go-datax/common/element"
-	"github.com/longkeyy/go-datax/common/plugin"
-	"log"
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/longkeyy/go-datax/common/config"
+	"github.com/longkeyy/go-datax/common/element"
+	"github.com/longkeyy/go-datax/common/plugin"
+	"github.com/longkeyy/go-datax/common/logger"
+	"github.com/longkeyy/go-datax/common/factory"
+	coreplugin "github.com/longkeyy/go-datax/core/registry"
+	"go.uber.org/zap"
 )
 
 const (
@@ -18,12 +22,13 @@ const (
 
 // StreamWriterJob Stream写入作业，用于输出数据到控制台或文件
 type StreamWriterJob struct {
-	config          *config.Configuration
+	config          config.Configuration
 	print           bool
 	path            string
 	fileName        string
 	fieldDelimiter  string
 	encoding        string
+	factory         *factory.DataXFactory
 }
 
 func NewStreamWriterJob() *StreamWriterJob {
@@ -31,10 +36,11 @@ func NewStreamWriterJob() *StreamWriterJob {
 		print:          true,
 		fieldDelimiter: DefaultFieldDelimiter,
 		encoding:       "UTF-8",
+		factory:        factory.GetGlobalFactory(),
 	}
 }
 
-func (job *StreamWriterJob) Init(config *config.Configuration) error {
+func (job *StreamWriterJob) Init(config config.Configuration) error {
 	job.config = config
 
 	// 获取配置参数
@@ -51,7 +57,10 @@ func (job *StreamWriterJob) Init(config *config.Configuration) error {
 		}
 	}
 
-	log.Printf("StreamWriter initialized: print=%t, path=%s, fileName=%s", job.print, job.path, job.fileName)
+	logger.Component().WithComponent("StreamWriter").Info("StreamWriter initialized",
+		zap.Bool("print", job.print),
+		zap.String("path", job.path),
+		zap.String("fileName", job.fileName))
 	return nil
 }
 
@@ -78,17 +87,18 @@ func (job *StreamWriterJob) Prepare() error {
 	return nil
 }
 
-func (job *StreamWriterJob) Split(adviceNumber int) ([]*config.Configuration, error) {
-	taskConfigs := make([]*config.Configuration, 0)
+func (job *StreamWriterJob) Split(mandatoryNumber int) ([]config.Configuration, error) {
+	taskConfigs := make([]config.Configuration, 0)
 
 	// 创建指定数量的任务配置
-	for i := 0; i < adviceNumber; i++ {
+	for i := 0; i < mandatoryNumber; i++ {
 		taskConfig := job.config.Clone()
 		taskConfig.Set("taskId", i)
 		taskConfigs = append(taskConfigs, taskConfig)
 	}
 
-	log.Printf("Split into %d tasks", len(taskConfigs))
+	logger.Component().WithComponent("StreamWriter").Info("Split into tasks",
+		zap.Int("taskCount", len(taskConfigs)))
 	return taskConfigs, nil
 }
 
@@ -102,18 +112,21 @@ func (job *StreamWriterJob) Destroy() error {
 
 // StreamWriterTask Stream写入任务
 type StreamWriterTask struct {
-	config         *config.Configuration
+	config         config.Configuration
 	writerJob      *StreamWriterJob
 	writer         *bufio.Writer
 	file           *os.File
 	recordCount    int64
+	factory        *factory.DataXFactory
 }
 
 func NewStreamWriterTask() *StreamWriterTask {
-	return &StreamWriterTask{}
+	return &StreamWriterTask{
+		factory: factory.GetGlobalFactory(),
+	}
 }
 
-func (task *StreamWriterTask) Init(config *config.Configuration) error {
+func (task *StreamWriterTask) Init(config config.Configuration) error {
 	task.config = config
 
 	// 创建WriterJob来重用配置逻辑
@@ -132,11 +145,12 @@ func (task *StreamWriterTask) Init(config *config.Configuration) error {
 			return fmt.Errorf("failed to open file %s: %v", fullPath, err)
 		}
 		task.writer = bufio.NewWriter(task.file)
-		log.Printf("Writing to file: %s", fullPath)
+		logger.Component().WithComponent("StreamWriter").Info("Writing to file",
+			zap.String("path", fullPath))
 	} else {
 		// 写入标准输出
 		task.writer = bufio.NewWriter(os.Stdout)
-		log.Printf("Writing to stdout")
+		logger.Component().WithComponent("StreamWriter").Info("Writing to stdout")
 	}
 
 	return nil
@@ -159,7 +173,7 @@ func (task *StreamWriterTask) StartWrite(recordReceiver plugin.RecordReceiver) e
 	for {
 		record, err := recordReceiver.GetFromReader()
 		if err != nil {
-			if err == plugin.ErrChannelClosed {
+			if err == coreplugin.ErrChannelClosed {
 				break
 			}
 			return fmt.Errorf("failed to receive record: %v", err)
@@ -178,11 +192,13 @@ func (task *StreamWriterTask) StartWrite(recordReceiver plugin.RecordReceiver) e
 		// 每1000条记录输出一次进度并刷新缓冲区
 		if task.recordCount%1000 == 0 {
 			task.writer.Flush()
-			log.Printf("Written %d records", task.recordCount)
+			logger.Component().WithComponent("StreamWriter").Info("Writing progress",
+				zap.Int64("recordCount", task.recordCount))
 		}
 	}
 
-	log.Printf("Total records written: %d", task.recordCount)
+	logger.Component().WithComponent("StreamWriter").Info("Writing completed",
+		zap.Int64("totalRecords", task.recordCount))
 	return nil
 }
 

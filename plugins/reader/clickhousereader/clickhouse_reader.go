@@ -12,6 +12,7 @@ import (
 	"github.com/longkeyy/go-datax/common/config"
 	"github.com/longkeyy/go-datax/common/element"
 	"github.com/longkeyy/go-datax/common/plugin"
+	"github.com/longkeyy/go-datax/common/factory"
 )
 
 const (
@@ -20,7 +21,7 @@ const (
 
 // ClickHouseReaderJob ClickHouse读取作业
 type ClickHouseReaderJob struct {
-	config    *config.Configuration
+	config    config.Configuration
 	username  string
 	password  string
 	jdbcUrls  []string
@@ -31,16 +32,18 @@ type ClickHouseReaderJob struct {
 	querySql  string
 	fetchSize int
 	session   map[string]string
+	factory   *factory.DataXFactory
 }
 
 func NewClickHouseReaderJob() *ClickHouseReaderJob {
 	return &ClickHouseReaderJob{
 		fetchSize: DefaultFetchSize,
 		session:   make(map[string]string),
+		factory:   factory.GetGlobalFactory(),
 	}
 }
 
-func (job *ClickHouseReaderJob) Init(config *config.Configuration) error {
+func (job *ClickHouseReaderJob) Init(config config.Configuration) error {
 	job.config = config
 
 	// 获取数据库连接参数
@@ -201,8 +204,8 @@ func (job *ClickHouseReaderJob) getTableColumns(tableName string) ([]string, err
 	return job.columns, nil
 }
 
-func (job *ClickHouseReaderJob) Split(adviceNumber int) ([]*config.Configuration, error) {
-	taskConfigs := make([]*config.Configuration, 0)
+func (job *ClickHouseReaderJob) Split(adviceNumber int) ([]config.Configuration, error) {
+	taskConfigs := make([]config.Configuration, 0)
 
 	// 如果有splitPk，按splitPk进行数据分片
 	if job.splitPk != "" && adviceNumber > 1 {
@@ -227,7 +230,7 @@ func (job *ClickHouseReaderJob) Split(adviceNumber int) ([]*config.Configuration
 	return taskConfigs, nil
 }
 
-func (job *ClickHouseReaderJob) splitByPk(tableName string, adviceNumber int) ([]*config.Configuration, error) {
+func (job *ClickHouseReaderJob) splitByPk(tableName string, adviceNumber int) ([]config.Configuration, error) {
 	// 连接数据库获取splitPk的范围
 	options, err := job.parseConnectionString(job.jdbcUrls[0])
 	if err != nil {
@@ -255,7 +258,7 @@ func (job *ClickHouseReaderJob) splitByPk(tableName string, adviceNumber int) ([
 	}
 
 	// 计算分片范围
-	taskConfigs := make([]*config.Configuration, 0)
+	taskConfigs := make([]config.Configuration, 0)
 	if maxVal <= minVal {
 		// 只有一个分片
 		taskConfig := job.config.Clone()
@@ -307,16 +310,19 @@ func (job *ClickHouseReaderJob) Destroy() error {
 
 // ClickHouseReaderTask ClickHouse读取任务
 type ClickHouseReaderTask struct {
-	config    *config.Configuration
+	config    config.Configuration
 	readerJob *ClickHouseReaderJob
 	conn      clickhouse.Conn
+	factory   *factory.DataXFactory
 }
 
 func NewClickHouseReaderTask() *ClickHouseReaderTask {
-	return &ClickHouseReaderTask{}
+	return &ClickHouseReaderTask{
+		factory: factory.GetGlobalFactory(),
+	}
 }
 
-func (task *ClickHouseReaderTask) Init(config *config.Configuration) error {
+func (task *ClickHouseReaderTask) Init(config config.Configuration) error {
 	task.config = config
 
 	// 创建ReaderJob来重用配置逻辑
@@ -398,7 +404,7 @@ func (task *ClickHouseReaderTask) StartRead(recordSender plugin.RecordSender) er
 		}
 
 		// 转换为DataX记录
-		record := element.NewRecord()
+		record := task.factory.GetRecordFactory().CreateRecord()
 		for i, value := range values {
 			column := task.convertValue(value, columnTypes[i].DatabaseTypeName())
 			record.AddColumn(column)
@@ -451,46 +457,46 @@ func (task *ClickHouseReaderTask) buildQuery(tableName string, columns []string)
 
 func (task *ClickHouseReaderTask) convertValue(value interface{}, typeName string) element.Column {
 	if value == nil {
-		return element.NewStringColumn("")
+		return task.factory.GetColumnFactory().CreateStringColumn("")
 	}
 
 	switch typeName {
 	case "UInt8", "UInt16", "UInt32", "UInt64", "Int8", "Int16", "Int32", "Int64":
 		if intVal, err := strconv.ParseInt(fmt.Sprintf("%v", value), 10, 64); err == nil {
-			return element.NewLongColumn(intVal)
+			return task.factory.GetColumnFactory().CreateLongColumn(intVal)
 		}
-		return element.NewLongColumn(0)
+		return task.factory.GetColumnFactory().CreateLongColumn(0)
 
 	case "Float32", "Float64", "Decimal":
 		if floatVal, err := strconv.ParseFloat(fmt.Sprintf("%v", value), 64); err == nil {
-			return element.NewDoubleColumn(floatVal)
+			return task.factory.GetColumnFactory().CreateDoubleColumn(floatVal)
 		}
-		return element.NewDoubleColumn(0.0)
+		return task.factory.GetColumnFactory().CreateDoubleColumn(0.0)
 
 	case "Boolean":
 		if boolVal, err := strconv.ParseBool(fmt.Sprintf("%v", value)); err == nil {
-			return element.NewBoolColumn(boolVal)
+			return task.factory.GetColumnFactory().CreateBoolColumn(boolVal)
 		}
-		return element.NewBoolColumn(false)
+		return task.factory.GetColumnFactory().CreateBoolColumn(false)
 
 	case "Date", "Date32", "DateTime", "DateTime64":
 		if timeVal, ok := value.(time.Time); ok {
-			return element.NewDateColumn(timeVal)
+			return task.factory.GetColumnFactory().CreateDateColumn(timeVal)
 		}
-		return element.NewStringColumn(fmt.Sprintf("%v", value))
+		return task.factory.GetColumnFactory().CreateStringColumn(fmt.Sprintf("%v", value))
 
 	case "Array(UInt8)":
 		if bytesVal, ok := value.([]byte); ok {
-			return element.NewBytesColumn(bytesVal)
+			return task.factory.GetColumnFactory().CreateBytesColumn(bytesVal)
 		}
-		return element.NewBytesColumn([]byte{})
+		return task.factory.GetColumnFactory().CreateBytesColumn([]byte{})
 
 	default: // String, FixedString, UUID, IPv4, IPv6, Array types
 		if strings.HasPrefix(typeName, "Array(") {
 			// Array类型转换为JSON字符串
-			return element.NewStringColumn(fmt.Sprintf("%v", value))
+			return task.factory.GetColumnFactory().CreateStringColumn(fmt.Sprintf("%v", value))
 		}
-		return element.NewStringColumn(fmt.Sprintf("%v", value))
+		return task.factory.GetColumnFactory().CreateStringColumn(fmt.Sprintf("%v", value))
 	}
 }
 

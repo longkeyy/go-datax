@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -12,14 +13,14 @@ import (
 
 	"github.com/longkeyy/go-datax/common/config"
 	"github.com/longkeyy/go-datax/common/element"
-	"github.com/longkeyy/go-datax/common/logger"
 	"github.com/longkeyy/go-datax/common/plugin"
-	"go.uber.org/zap"
+	"github.com/longkeyy/go-datax/common/factory"
+	coreplugin "github.com/longkeyy/go-datax/core/registry"
 )
 
 // JSONFileWriterJob JSON文件写入作业
 type JSONFileWriterJob struct {
-	config       *config.Configuration
+	config       config.Configuration
 	path         string
 	fileName     string
 	writeMode    string
@@ -33,6 +34,7 @@ type JSONFileWriterJob struct {
 	fileSuffix   string
 	maxFileSize  int64 // 单个文件最大大小（字节）
 	maxRecords   int64 // 单个文件最大记录数
+	factory      *factory.DataXFactory
 }
 
 func NewJSONFileWriterJob() *JSONFileWriterJob {
@@ -44,12 +46,12 @@ func NewJSONFileWriterJob() *JSONFileWriterJob {
 		nullFormat:  "",
 		maxFileSize: 1024 * 1024 * 1024, // 默认1GB
 		maxRecords:  1000000,             // 默认100万条记录
+		factory:     factory.GetGlobalFactory(),
 	}
 }
 
-func (job *JSONFileWriterJob) Init(config *config.Configuration) error {
+func (job *JSONFileWriterJob) Init(config config.Configuration) error {
 	job.config = config
-	compLogger := logger.Component().WithComponent("JSONFileWriterJob")
 
 	// 获取必需参数
 	job.path = config.GetString("parameter.path")
@@ -102,8 +104,7 @@ func (job *JSONFileWriterJob) Init(config *config.Configuration) error {
 			job.format = "jsonl"
 		}
 	default:
-		compLogger.Warn("Unknown format specified, using jsonl",
-			zap.String("format", job.format))
+		log.Printf("Unknown format specified, using jsonl: %s", job.format)
 		job.format = "jsonl"
 	}
 
@@ -112,18 +113,13 @@ func (job *JSONFileWriterJob) Init(config *config.Configuration) error {
 		return fmt.Errorf("failed to create output directory: %v", err)
 	}
 
-	compLogger.Info("JSONFileWriter initialized",
-		zap.String("path", job.path),
-		zap.String("fileName", job.fileName),
-		zap.String("format", job.format),
-		zap.String("writeMode", job.writeMode),
-		zap.Int("columns", len(job.columns)))
+	log.Printf("JSONFileWriter initialized: path=%s, fileName=%s, format=%s, writeMode=%s, columns=%d",
+		job.path, job.fileName, job.format, job.writeMode, len(job.columns))
 
 	return nil
 }
 
 func (job *JSONFileWriterJob) Prepare() error {
-	compLogger := logger.Component().WithComponent("JSONFileWriterJob")
 
 	// 根据写入模式处理已存在的文件
 	if job.writeMode == "truncate" {
@@ -136,11 +132,9 @@ func (job *JSONFileWriterJob) Prepare() error {
 
 		for _, match := range matches {
 			if err := os.Remove(match); err != nil {
-				compLogger.Warn("Failed to remove existing file",
-					zap.String("file", match),
-					zap.Error(err))
+				log.Printf("Warning: failed to remove existing file %s: %v", match, err)
 			} else {
-				compLogger.Debug("Removed existing file", zap.String("file", match))
+				log.Printf("Removed existing file: %s", match)
 			}
 		}
 	}
@@ -175,9 +169,8 @@ func (job *JSONFileWriterJob) getFilePattern() string {
 	return filepath.Join(job.path, fileName+"*"+extension)
 }
 
-func (job *JSONFileWriterJob) Split(mandatoryNumber int) ([]*config.Configuration, error) {
-	taskConfigs := make([]*config.Configuration, mandatoryNumber)
-	compLogger := logger.Component().WithComponent("JSONFileWriterJob")
+func (job *JSONFileWriterJob) Split(mandatoryNumber int) ([]config.Configuration, error) {
+	taskConfigs := make([]config.Configuration, mandatoryNumber)
 
 	for i := 0; i < mandatoryNumber; i++ {
 		taskConfig := job.config.Clone()
@@ -185,7 +178,7 @@ func (job *JSONFileWriterJob) Split(mandatoryNumber int) ([]*config.Configuratio
 		taskConfigs[i] = taskConfig
 	}
 
-	compLogger.Info("Split writer tasks", zap.Int("taskCount", mandatoryNumber))
+	log.Printf("Split writer tasks: %d", mandatoryNumber)
 	return taskConfigs, nil
 }
 
@@ -199,7 +192,7 @@ func (job *JSONFileWriterJob) Destroy() error {
 
 // JSONFileWriterTask JSON文件写入任务
 type JSONFileWriterTask struct {
-	config        *config.Configuration
+	config        config.Configuration
 	writerJob     *JSONFileWriterJob
 	taskId        int
 	currentFile   *os.File
@@ -209,17 +202,18 @@ type JSONFileWriterTask struct {
 	fileCount     int
 	isFirstRecord bool
 	jsonArray     []map[string]interface{} // 用于JSON格式的缓存
+	factory       *factory.DataXFactory
 }
 
 func NewJSONFileWriterTask() *JSONFileWriterTask {
 	return &JSONFileWriterTask{
 		isFirstRecord: true,
+		factory:       factory.GetGlobalFactory(),
 	}
 }
 
-func (task *JSONFileWriterTask) Init(config *config.Configuration) error {
+func (task *JSONFileWriterTask) Init(config config.Configuration) error {
 	task.config = config
-	compLogger := logger.Component().WithComponent("JSONFileWriterTask")
 
 	// 创建WriterJob来重用配置逻辑
 	task.writerJob = NewJSONFileWriterJob()
@@ -231,7 +225,7 @@ func (task *JSONFileWriterTask) Init(config *config.Configuration) error {
 	// 获取任务ID
 	task.taskId = config.GetIntWithDefault("taskId", 0)
 
-	compLogger.Info("JSONFileWriter task initialized", zap.Int("taskId", task.taskId))
+	log.Printf("JSONFileWriter task initialized: taskId=%d", task.taskId)
 	return nil
 }
 
@@ -240,21 +234,18 @@ func (task *JSONFileWriterTask) Prepare() error {
 }
 
 func (task *JSONFileWriterTask) StartWrite(recordReceiver plugin.RecordReceiver) error {
-	compLogger := logger.Component().WithComponent("JSONFileWriterTask")
 	totalRecords := int64(0)
 
 	defer func() {
 		// 确保文件正确关闭
 		task.closeCurrentFile()
-		compLogger.Info("Write task completed",
-			zap.Int64("totalRecords", totalRecords),
-			zap.Int("filesCreated", task.fileCount))
+		log.Printf("Write task completed: totalRecords=%d, filesCreated=%d", totalRecords, task.fileCount)
 	}()
 
 	for {
 		record, err := recordReceiver.GetFromReader()
 		if err != nil {
-			if err == plugin.ErrChannelClosed {
+			if err == coreplugin.ErrChannelClosed {
 				break
 			}
 			return fmt.Errorf("failed to receive record: %v", err)
@@ -279,9 +270,7 @@ func (task *JSONFileWriterTask) StartWrite(recordReceiver plugin.RecordReceiver)
 
 		// 每1000条记录输出一次进度
 		if totalRecords%1000 == 0 {
-			compLogger.Debug("Writing progress",
-				zap.Int64("records", totalRecords),
-				zap.Int("currentFile", task.fileCount))
+			log.Printf("Writing progress: records=%d, currentFile=%d", totalRecords, task.fileCount)
 		}
 	}
 
@@ -344,9 +333,7 @@ func (task *JSONFileWriterTask) createNewFile() error {
 		task.jsonArray = make([]map[string]interface{}, 0)
 	}
 
-	logger.Component().WithComponent("JSONFileWriterTask").Info("Created new file",
-		zap.String("file", filePath),
-		zap.Int("fileNumber", task.fileCount))
+	log.Printf("Created new file: %s (fileNumber=%d)", filePath, task.fileCount)
 
 	return nil
 }

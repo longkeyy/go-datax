@@ -3,13 +3,14 @@ package sqlserverreader
 import (
 	"database/sql"
 	"fmt"
-	"github.com/longkeyy/go-datax/common/config"
-	"github.com/longkeyy/go-datax/common/element"
-	"github.com/longkeyy/go-datax/common/plugin"
 	"log"
 	"strings"
 	"time"
 
+	"github.com/longkeyy/go-datax/common/config"
+	"github.com/longkeyy/go-datax/common/element"
+	"github.com/longkeyy/go-datax/common/plugin"
+	"github.com/longkeyy/go-datax/common/factory"
 	"gorm.io/driver/sqlserver"
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
@@ -21,7 +22,7 @@ const (
 
 // SQLServerReaderJob SQL Server读取作业
 type SQLServerReaderJob struct {
-	config    *config.Configuration
+	config    config.Configuration
 	username  string
 	password  string
 	jdbcUrls  []string
@@ -31,15 +32,17 @@ type SQLServerReaderJob struct {
 	splitPk   string
 	querySql  string // 支持自定义查询SQL
 	fetchSize int
+	factory   *factory.DataXFactory
 }
 
 func NewSQLServerReaderJob() *SQLServerReaderJob {
 	return &SQLServerReaderJob{
 		fetchSize: DefaultFetchSize,
+		factory:   factory.GetGlobalFactory(),
 	}
 }
 
-func (job *SQLServerReaderJob) Init(config *config.Configuration) error {
+func (job *SQLServerReaderJob) Init(config config.Configuration) error {
 	job.config = config
 
 	// 获取数据库连接参数
@@ -95,8 +98,8 @@ func (job *SQLServerReaderJob) Init(config *config.Configuration) error {
 	return nil
 }
 
-func (job *SQLServerReaderJob) Split(adviceNumber int) ([]*config.Configuration, error) {
-	taskConfigs := make([]*config.Configuration, 0)
+func (job *SQLServerReaderJob) Split(adviceNumber int) ([]config.Configuration, error) {
+	taskConfigs := make([]config.Configuration, 0)
 
 	// 如果使用querySql模式或没有设置splitPk，则不进行分片，使用单个任务
 	if job.querySql != "" || job.splitPk == "" {
@@ -267,16 +270,19 @@ func (job *SQLServerReaderJob) Destroy() error {
 
 // SQLServerReaderTask SQL Server读取任务
 type SQLServerReaderTask struct {
-	config    *config.Configuration
+	config    config.Configuration
 	readerJob *SQLServerReaderJob
 	db        *gorm.DB
+	factory   *factory.DataXFactory
 }
 
 func NewSQLServerReaderTask() *SQLServerReaderTask {
-	return &SQLServerReaderTask{}
+	return &SQLServerReaderTask{
+		factory: factory.GetGlobalFactory(),
+	}
 }
 
-func (task *SQLServerReaderTask) Init(config *config.Configuration) error {
+func (task *SQLServerReaderTask) Init(config config.Configuration) error {
 	task.config = config
 
 	// 创建ReaderJob来重用连接逻辑
@@ -339,7 +345,7 @@ func (task *SQLServerReaderTask) StartRead(recordSender plugin.RecordSender) err
 		}
 
 		// 创建记录
-		record := element.NewRecord()
+		record := task.factory.GetRecordFactory().CreateRecord()
 		for _, value := range values {
 			column := task.convertToColumn(value)
 			record.AddColumn(column)
@@ -411,32 +417,33 @@ func (task *SQLServerReaderTask) buildQuery() (string, error) {
 }
 
 func (task *SQLServerReaderTask) convertToColumn(value interface{}) element.Column {
+	columnFactory := task.factory.GetColumnFactory()
 	if value == nil {
-		return element.NewStringColumn("")
+		return columnFactory.CreateStringColumn("")
 	}
 
 	switch v := value.(type) {
 	case int64:
-		return element.NewLongColumn(v)
+		return columnFactory.CreateLongColumn(v)
 	case int32:
-		return element.NewLongColumn(int64(v))
+		return columnFactory.CreateLongColumn(int64(v))
 	case int:
-		return element.NewLongColumn(int64(v))
+		return columnFactory.CreateLongColumn(int64(v))
 	case float64:
-		return element.NewDoubleColumn(v)
+		return columnFactory.CreateDoubleColumn(v)
 	case float32:
-		return element.NewDoubleColumn(float64(v))
+		return columnFactory.CreateDoubleColumn(float64(v))
 	case string:
-		return element.NewStringColumn(v)
+		return columnFactory.CreateStringColumn(v)
 	case []byte:
-		return element.NewBytesColumn(v)
+		return columnFactory.CreateBytesColumn(v)
 	case time.Time:
-		return element.NewDateColumn(v)
+		return columnFactory.CreateDateColumn(v)
 	case bool:
-		return element.NewBoolColumn(v)
+		return columnFactory.CreateBoolColumn(v)
 	default:
 		// 其他类型转换为字符串
-		return element.NewStringColumn(fmt.Sprintf("%v", v))
+		return columnFactory.CreateStringColumn(fmt.Sprintf("%v", v))
 	}
 }
 

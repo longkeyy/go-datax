@@ -2,12 +2,14 @@ package sqlitewriter
 
 import (
 	"fmt"
-	"github.com/longkeyy/go-datax/common/config"
-	"github.com/longkeyy/go-datax/common/element"
-	"github.com/longkeyy/go-datax/common/plugin"
 	"log"
 	"strings"
 
+	"github.com/longkeyy/go-datax/common/config"
+	"github.com/longkeyy/go-datax/common/element"
+	"github.com/longkeyy/go-datax/common/plugin"
+	"github.com/longkeyy/go-datax/common/factory"
+	coreplugin "github.com/longkeyy/go-datax/core/registry"
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
@@ -19,7 +21,7 @@ const (
 
 // SQLiteWriterJob SQLite写入作业
 type SQLiteWriterJob struct {
-	config    *config.Configuration
+	config    config.Configuration
 	jdbcUrls  []string
 	tables    []string
 	columns   []string
@@ -27,13 +29,16 @@ type SQLiteWriterJob struct {
 	postSql   []string
 	writeMode string
 	batchSize int
+	factory   *factory.DataXFactory
 }
 
 func NewSQLiteWriterJob() *SQLiteWriterJob {
-	return &SQLiteWriterJob{}
+	return &SQLiteWriterJob{
+		factory: factory.GetGlobalFactory(),
+	}
 }
 
-func (job *SQLiteWriterJob) Init(config *config.Configuration) error {
+func (job *SQLiteWriterJob) Init(config config.Configuration) error {
 	job.config = config
 
 	// 获取连接信息
@@ -149,11 +154,11 @@ func (job *SQLiteWriterJob) getTableColumns() ([]string, error) {
 	return columns, nil
 }
 
-func (job *SQLiteWriterJob) Split(adviceNumber int) ([]*config.Configuration, error) {
-	taskConfigs := make([]*config.Configuration, 0)
+func (job *SQLiteWriterJob) Split(mandatoryNumber int) ([]config.Configuration, error) {
+	taskConfigs := make([]config.Configuration, 0)
 
 	// SQLite Writer通常不需要分片，每个task写入相同的表
-	for i := 0; i < adviceNumber; i++ {
+	for i := 0; i < mandatoryNumber; i++ {
 		taskConfig := job.config.Clone()
 		taskConfig.Set("taskId", i)
 		taskConfigs = append(taskConfigs, taskConfig)
@@ -225,17 +230,20 @@ func (job *SQLiteWriterJob) Destroy() error {
 
 // SQLiteWriterTask SQLite写入任务
 type SQLiteWriterTask struct {
-	config    *config.Configuration
+	config    config.Configuration
 	writerJob *SQLiteWriterJob
 	db        *gorm.DB
 	records   []element.Record
+	factory   *factory.DataXFactory
 }
 
 func NewSQLiteWriterTask() *SQLiteWriterTask {
-	return &SQLiteWriterTask{}
+	return &SQLiteWriterTask{
+		factory: factory.GetGlobalFactory(),
+	}
 }
 
-func (task *SQLiteWriterTask) Init(config *config.Configuration) error {
+func (task *SQLiteWriterTask) Init(config config.Configuration) error {
 	task.config = config
 
 	// 创建WriterJob来重用连接逻辑
@@ -268,7 +276,7 @@ func (task *SQLiteWriterTask) StartWrite(recordReceiver plugin.RecordReceiver) e
 	for {
 		record, err := recordReceiver.GetFromReader()
 		if err != nil {
-			if err == plugin.ErrChannelClosed {
+			if err == coreplugin.ErrChannelClosed {
 				break
 			}
 			return fmt.Errorf("failed to get record: %v", err)
@@ -415,20 +423,24 @@ func (task *SQLiteWriterTask) convertColumnValue(column element.Column) interfac
 		return nil
 	}
 
-	switch col := column.(type) {
-	case *element.StringColumn:
-		return col.GetAsString()
-	case *element.LongColumn:
-		val, _ := col.GetAsLong()
+	// 使用新的Column接口方法
+	switch column.GetType() {
+	case element.TypeString:
+		return column.GetAsString()
+	case element.TypeLong:
+		val, _ := column.GetAsLong()
 		return val
-	case *element.DoubleColumn:
-		val, _ := col.GetAsDouble()
+	case element.TypeDouble:
+		val, _ := column.GetAsDouble()
 		return val
-	case *element.DateColumn:
-		val, _ := col.GetAsDate()
+	case element.TypeDate:
+		val, _ := column.GetAsDate()
 		return val
-	case *element.BoolColumn:
-		val, _ := col.GetAsBool()
+	case element.TypeBool:
+		val, _ := column.GetAsBool()
+		return val
+	case element.TypeBytes:
+		val, _ := column.GetAsBytes()
 		return val
 	default:
 		// 其他类型作为字符串处理

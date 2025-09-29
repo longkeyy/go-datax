@@ -2,14 +2,27 @@ package txtfilereader
 
 import (
 	"github.com/longkeyy/go-datax/common/plugin"
+	"github.com/longkeyy/go-datax/common/factory"
 )
 
-func init() {
-	plugin.RegisterReaderJob("txtfilereader", func() plugin.ReaderJob {
-		return NewTxtFileReaderJob()
-	})
+// TxtFileReaderJobFactory 实现ReaderJobFactory接口
+type TxtFileReaderJobFactory struct{}
 
-	plugin.RegisterReaderTask("txtfilereader", func() plugin.ReaderTask {
-		return NewTxtFileReaderTask()
-	})
+func (f *TxtFileReaderJobFactory) CreateReaderJob() plugin.ReaderJob {
+	return NewTxtFileReaderJob()
+}
+
+// TxtFileReaderTaskFactory 实现ReaderTaskFactory接口
+type TxtFileReaderTaskFactory struct{}
+
+func (f *TxtFileReaderTaskFactory) CreateReaderTask() plugin.ReaderTask {
+	return NewTxtFileReaderTask()
+}
+
+func init() {
+	factoryInstance := factory.GetGlobalFactory()
+	registry := factoryInstance.GetPluginRegistry()
+
+	registry.RegisterReaderJob("txtfilereader", &TxtFileReaderJobFactory{})
+	registry.RegisterReaderTask("txtfilereader", &TxtFileReaderTaskFactory{})
 }

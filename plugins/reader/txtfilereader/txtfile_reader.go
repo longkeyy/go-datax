@@ -16,11 +16,12 @@ import (
 	"github.com/longkeyy/go-datax/common/config"
 	"github.com/longkeyy/go-datax/common/element"
 	"github.com/longkeyy/go-datax/common/plugin"
+	"github.com/longkeyy/go-datax/common/factory"
 )
 
 // TxtFileReaderJob 文本文件读取作业
 type TxtFileReaderJob struct {
-	config           *config.Configuration
+	config           config.Configuration
 	paths            []string
 	columns          []map[string]interface{}
 	fieldDelimiter   string
@@ -30,6 +31,7 @@ type TxtFileReaderJob struct {
 	nullFormat       string
 	csvReaderConfig  map[string]interface{}
 	resolvedFilePaths []string
+	factory          *factory.DataXFactory
 }
 
 func NewTxtFileReaderJob() *TxtFileReaderJob {
@@ -43,10 +45,11 @@ func NewTxtFileReaderJob() *TxtFileReaderJob {
 			"skipEmptyRecords": false,
 			"useTextQualifier": false,
 		},
+		factory: factory.GetGlobalFactory(),
 	}
 }
 
-func (job *TxtFileReaderJob) Init(config *config.Configuration) error {
+func (job *TxtFileReaderJob) Init(config config.Configuration) error {
 	job.config = config
 
 	// 获取必需参数
@@ -164,8 +167,8 @@ func (job *TxtFileReaderJob) Prepare() error {
 	return nil
 }
 
-func (job *TxtFileReaderJob) Split(adviceNumber int) ([]*config.Configuration, error) {
-	taskConfigs := make([]*config.Configuration, 0)
+func (job *TxtFileReaderJob) Split(adviceNumber int) ([]config.Configuration, error) {
+	taskConfigs := make([]config.Configuration, 0)
 
 	// 按文件进行分片
 	fileCount := len(job.resolvedFilePaths)
@@ -214,16 +217,19 @@ func (job *TxtFileReaderJob) Destroy() error {
 
 // TxtFileReaderTask 文本文件读取任务
 type TxtFileReaderTask struct {
-	config    *config.Configuration
+	config    config.Configuration
 	readerJob *TxtFileReaderJob
 	taskFiles []string
+	factory   *factory.DataXFactory
 }
 
 func NewTxtFileReaderTask() *TxtFileReaderTask {
-	return &TxtFileReaderTask{}
+	return &TxtFileReaderTask{
+		factory: factory.GetGlobalFactory(),
+	}
 }
 
-func (task *TxtFileReaderTask) Init(config *config.Configuration) error {
+func (task *TxtFileReaderTask) Init(config config.Configuration) error {
 	task.config = config
 
 	// 创建ReaderJob来重用配置逻辑
@@ -364,7 +370,7 @@ func (task *TxtFileReaderTask) readFile(filePath string, recordSender plugin.Rec
 }
 
 func (task *TxtFileReaderTask) convertRecord(csvRecord []string) (element.Record, error) {
-	record := element.NewRecord()
+	record := task.factory.GetRecordFactory().CreateRecord()
 
 	// 处理通配符模式
 	if len(task.readerJob.columns) == 1 {
@@ -418,7 +424,7 @@ func (task *TxtFileReaderTask) convertColumnValue(csvRecord []string, columnConf
 	// 检查索引是否越界
 	if indexInt < 0 || indexInt >= len(csvRecord) {
 		// 超出范围的字段返回null
-		return element.NewStringColumn(""), nil
+		return task.factory.GetColumnFactory().CreateStringColumn(""), nil
 	}
 
 	value := csvRecord[indexInt]
@@ -428,32 +434,34 @@ func (task *TxtFileReaderTask) convertColumnValue(csvRecord []string, columnConf
 func (task *TxtFileReaderTask) convertValue(value, columnType, format string) element.Column {
 	// 检查是否为null值
 	if value == task.readerJob.nullFormat || value == "" {
-		return element.NewStringColumn("")
+		return task.factory.GetColumnFactory().CreateStringColumn("")
 	}
+
+	columnFactory := task.factory.GetColumnFactory()
 
 	switch columnType {
 	case "long":
 		if intVal, err := strconv.ParseInt(value, 10, 64); err == nil {
-			return element.NewLongColumn(intVal)
+			return columnFactory.CreateLongColumn(intVal)
 		}
-		return element.NewLongColumn(0)
+		return columnFactory.CreateLongColumn(0)
 
 	case "double":
 		if floatVal, err := strconv.ParseFloat(value, 64); err == nil {
-			return element.NewDoubleColumn(floatVal)
+			return columnFactory.CreateDoubleColumn(floatVal)
 		}
-		return element.NewDoubleColumn(0.0)
+		return columnFactory.CreateDoubleColumn(0.0)
 
 	case "boolean":
 		if boolVal, err := strconv.ParseBool(value); err == nil {
-			return element.NewBoolColumn(boolVal)
+			return columnFactory.CreateBoolColumn(boolVal)
 		}
-		return element.NewBoolColumn(false)
+		return columnFactory.CreateBoolColumn(false)
 
 	case "date":
 		if format != "" {
 			if dateVal, err := time.Parse(format, value); err == nil {
-				return element.NewDateColumn(dateVal)
+				return columnFactory.CreateDateColumn(dateVal)
 			}
 		}
 		// 尝试常见的日期格式
@@ -467,13 +475,13 @@ func (task *TxtFileReaderTask) convertValue(value, columnType, format string) el
 		}
 		for _, fmt := range dateFormats {
 			if dateVal, err := time.Parse(fmt, value); err == nil {
-				return element.NewDateColumn(dateVal)
+				return columnFactory.CreateDateColumn(dateVal)
 			}
 		}
-		return element.NewStringColumn(value)
+		return columnFactory.CreateStringColumn(value)
 
 	default: // string
-		return element.NewStringColumn(value)
+		return columnFactory.CreateStringColumn(value)
 	}
 }
 

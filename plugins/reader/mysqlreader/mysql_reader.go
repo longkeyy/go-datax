@@ -3,16 +3,18 @@ package mysqlreader
 import (
 	"database/sql"
 	"fmt"
-	"github.com/longkeyy/go-datax/common/config"
-	"github.com/longkeyy/go-datax/common/element"
-	"github.com/longkeyy/go-datax/common/plugin"
-	"log"
 	"strings"
 	"time"
 
+	"github.com/longkeyy/go-datax/common/config"
+	"github.com/longkeyy/go-datax/common/element"
+	"github.com/longkeyy/go-datax/common/plugin"
+	"github.com/longkeyy/go-datax/common/logger"
+	"github.com/longkeyy/go-datax/common/factory"
+	"go.uber.org/zap"
 	"gorm.io/driver/mysql"
 	"gorm.io/gorm"
-	"gorm.io/gorm/logger"
+	gormLogger "gorm.io/gorm/logger"
 )
 
 const (
@@ -21,7 +23,7 @@ const (
 
 // MySQLReaderJob MySQL读取作业
 type MySQLReaderJob struct {
-	config   *config.Configuration
+	config   config.Configuration
 	username string
 	password string
 	jdbcUrls []string
@@ -30,13 +32,16 @@ type MySQLReaderJob struct {
 	where    string
 	splitPk  string
 	querySql string // 支持自定义查询SQL
+	factory  *factory.DataXFactory
 }
 
 func NewMySQLReaderJob() *MySQLReaderJob {
-	return &MySQLReaderJob{}
+	return &MySQLReaderJob{
+		factory: factory.GetGlobalFactory(),
+	}
 }
 
-func (job *MySQLReaderJob) Init(config *config.Configuration) error {
+func (job *MySQLReaderJob) Init(config config.Configuration) error {
 	job.config = config
 
 	// 获取数据库连接参数
@@ -69,7 +74,7 @@ func (job *MySQLReaderJob) Init(config *config.Configuration) error {
 	// 检查配置模式：querySql 或 table/column 模式
 	if job.querySql != "" {
 		// querySql模式：直接使用用户提供的SQL查询
-		log.Printf("MySQL Reader initialized with querySql mode")
+		logger.Component().WithComponent("MySQLReader").Info("MySQL Reader initialized with querySql mode")
 	} else {
 		// table/column模式：需要table和column配置
 		job.tables = conn.GetStringList("table")
@@ -81,14 +86,16 @@ func (job *MySQLReaderJob) Init(config *config.Configuration) error {
 		if len(job.columns) == 0 {
 			return fmt.Errorf("column is required when querySql is not specified")
 		}
-		log.Printf("MySQL Reader initialized with table/column mode: tables=%v, columns=%v", job.tables, job.columns)
+		logger.Component().WithComponent("MySQLReader").Info("MySQL Reader initialized with table/column mode",
+			zap.Any("tables", job.tables),
+			zap.Any("columns", job.columns))
 	}
 
 	return nil
 }
 
-func (job *MySQLReaderJob) Split(adviceNumber int) ([]*config.Configuration, error) {
-	taskConfigs := make([]*config.Configuration, 0)
+func (job *MySQLReaderJob) Split(adviceNumber int) ([]config.Configuration, error) {
+	taskConfigs := make([]config.Configuration, 0)
 
 	// 如果使用querySql模式或没有设置splitPk，则不进行分片，使用单个任务
 	if job.querySql != "" || job.splitPk == "" {
@@ -96,9 +103,9 @@ func (job *MySQLReaderJob) Split(adviceNumber int) ([]*config.Configuration, err
 		taskConfig.Set("taskId", 0)
 		taskConfigs = append(taskConfigs, taskConfig)
 		if job.querySql != "" {
-			log.Printf("Using querySql mode, single task")
+			logger.Component().WithComponent("MySQLReader").Info("Using querySql mode, single task")
 		} else {
-			log.Printf("No splitPk specified, using single task")
+			logger.Component().WithComponent("MySQLReader").Info("No splitPk specified, using single task")
 		}
 		return taskConfigs, nil
 	}
@@ -106,7 +113,8 @@ func (job *MySQLReaderJob) Split(adviceNumber int) ([]*config.Configuration, err
 	// 如果设置了splitPk，尝试进行分片
 	ranges, err := job.calculateSplitRanges(adviceNumber)
 	if err != nil {
-		log.Printf("Failed to calculate split ranges, fallback to single task: %v", err)
+		logger.Component().WithComponent("MySQLReader").Warn("Failed to calculate split ranges, fallback to single task",
+			zap.Error(err))
 		taskConfig := job.config.Clone()
 		taskConfig.Set("taskId", 0)
 		taskConfigs = append(taskConfigs, taskConfig)
@@ -121,7 +129,9 @@ func (job *MySQLReaderJob) Split(adviceNumber int) ([]*config.Configuration, err
 		taskConfigs = append(taskConfigs, taskConfig)
 	}
 
-	log.Printf("Split into %d tasks based on splitPk: %s", len(taskConfigs), job.splitPk)
+	logger.Component().WithComponent("MySQLReader").Info("Split into tasks based on splitPk",
+		zap.Int("taskCount", len(taskConfigs)),
+		zap.String("splitPk", job.splitPk))
 	return taskConfigs, nil
 }
 
@@ -249,12 +259,14 @@ func (job *MySQLReaderJob) calculateTextSplitRanges(db *gorm.DB, adviceNumber in
 	// 策略1: 尝试字典序范围切分
 	ranges, err := job.calculateTextDictionarySplitRanges(db, adviceNumber)
 	if err != nil {
-		log.Printf("Dictionary-based splitting failed, trying offset-based splitting: %v", err)
+		logger.Component().WithComponent("MySQLReader").Warn("Dictionary-based splitting failed, trying offset-based splitting",
+			zap.Error(err))
 
 		// 策略2: 使用OFFSET/LIMIT切分
 		ranges, err = job.calculateOffsetSplitRanges(db, adviceNumber)
 		if err != nil {
-			log.Printf("Offset-based splitting failed, falling back to hash-based splitting: %v", err)
+			logger.Component().WithComponent("MySQLReader").Warn("Offset-based splitting failed, falling back to hash-based splitting",
+				zap.Error(err))
 			// 策略3: hash切分（兜底）
 			return job.calculateHashSplitRanges(adviceNumber), nil
 		}
@@ -443,7 +455,7 @@ func (job *MySQLReaderJob) connect() (*gorm.DB, error) {
 
 	// 连接数据库
 	db, err := gorm.Open(mysql.Open(dsn), &gorm.Config{
-		Logger: logger.Default.LogMode(logger.Silent),
+		Logger: gormLogger.Default.LogMode(gormLogger.Silent),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect to database: %v", err)
@@ -504,16 +516,19 @@ func (job *MySQLReaderJob) Destroy() error {
 
 // MySQLReaderTask MySQL读取任务
 type MySQLReaderTask struct {
-	config    *config.Configuration
+	config    config.Configuration
 	readerJob *MySQLReaderJob
 	db        *gorm.DB
+	factory   *factory.DataXFactory
 }
 
 func NewMySQLReaderTask() *MySQLReaderTask {
-	return &MySQLReaderTask{}
+	return &MySQLReaderTask{
+		factory: factory.GetGlobalFactory(),
+	}
 }
 
-func (task *MySQLReaderTask) Init(config *config.Configuration) error {
+func (task *MySQLReaderTask) Init(config config.Configuration) error {
 	task.config = config
 
 	// 创建ReaderJob来重用连接逻辑
@@ -545,7 +560,8 @@ func (task *MySQLReaderTask) StartRead(recordSender plugin.RecordSender) error {
 		return err
 	}
 
-	log.Printf("Executing query: %s", query)
+	logger.Component().WithComponent("MySQLReader").Info("Executing query",
+		zap.String("query", query))
 
 	// 执行查询
 	rows, err := task.db.Raw(query).Rows()
@@ -576,7 +592,7 @@ func (task *MySQLReaderTask) StartRead(recordSender plugin.RecordSender) error {
 		}
 
 		// 创建记录
-		record := element.NewRecord()
+		record := task.factory.GetRecordFactory().CreateRecord()
 		for _, value := range values {
 			column := task.convertToColumn(value)
 			record.AddColumn(column)
@@ -589,11 +605,13 @@ func (task *MySQLReaderTask) StartRead(recordSender plugin.RecordSender) error {
 
 		recordCount++
 		if recordCount%1000 == 0 {
-			log.Printf("Read %d records", recordCount)
+			logger.Component().WithComponent("MySQLReader").Info("Reading progress",
+				zap.Int("recordCount", recordCount))
 		}
 	}
 
-	log.Printf("Total records read: %d", recordCount)
+	logger.Component().WithComponent("MySQLReader").Info("Reading completed",
+		zap.Int("totalRecords", recordCount))
 	return nil
 }
 
@@ -727,32 +745,33 @@ func (task *MySQLReaderTask) buildHashCondition(rangeMap map[string]interface{})
 }
 
 func (task *MySQLReaderTask) convertToColumn(value interface{}) element.Column {
+	columnFactory := task.factory.GetColumnFactory()
 	if value == nil {
-		return element.NewStringColumn("")
+		return columnFactory.CreateStringColumn("")
 	}
 
 	switch v := value.(type) {
 	case int64:
-		return element.NewLongColumn(v)
+		return columnFactory.CreateLongColumn(v)
 	case int32:
-		return element.NewLongColumn(int64(v))
+		return columnFactory.CreateLongColumn(int64(v))
 	case int:
-		return element.NewLongColumn(int64(v))
+		return columnFactory.CreateLongColumn(int64(v))
 	case float64:
-		return element.NewDoubleColumn(v)
+		return columnFactory.CreateDoubleColumn(v)
 	case float32:
-		return element.NewDoubleColumn(float64(v))
+		return columnFactory.CreateDoubleColumn(float64(v))
 	case string:
-		return element.NewStringColumn(v)
+		return columnFactory.CreateStringColumn(v)
 	case []byte:
-		return element.NewStringColumn(string(v))
+		return columnFactory.CreateStringColumn(string(v))
 	case time.Time:
-		return element.NewDateColumn(v)
+		return columnFactory.CreateDateColumn(v)
 	case bool:
-		return element.NewBoolColumn(v)
+		return columnFactory.CreateBoolColumn(v)
 	default:
 		// 其他类型转换为字符串
-		return element.NewStringColumn(fmt.Sprintf("%v", v))
+		return columnFactory.CreateStringColumn(fmt.Sprintf("%v", v))
 	}
 }
 

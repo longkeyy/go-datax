@@ -3,16 +3,18 @@ package sqlitereader
 import (
 	"database/sql"
 	"fmt"
-	"github.com/longkeyy/go-datax/common/config"
-	"github.com/longkeyy/go-datax/common/element"
-	"github.com/longkeyy/go-datax/common/plugin"
-	"log"
 	"strings"
 	"time"
 
+	"github.com/longkeyy/go-datax/common/config"
+	"github.com/longkeyy/go-datax/common/element"
+	"github.com/longkeyy/go-datax/common/plugin"
+	"github.com/longkeyy/go-datax/common/logger"
+	"github.com/longkeyy/go-datax/common/factory"
+	"go.uber.org/zap"
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
-	"gorm.io/gorm/logger"
+	gormLogger "gorm.io/gorm/logger"
 )
 
 const (
@@ -21,19 +23,22 @@ const (
 
 // SQLiteReaderJob SQLite读取作业
 type SQLiteReaderJob struct {
-	config   *config.Configuration
+	config   config.Configuration
 	jdbcUrls []string
 	tables   []string
 	columns  []string
 	where    string
 	splitPk  string
+	factory  *factory.DataXFactory
 }
 
 func NewSQLiteReaderJob() *SQLiteReaderJob {
-	return &SQLiteReaderJob{}
+	return &SQLiteReaderJob{
+		factory: factory.GetGlobalFactory(),
+	}
 }
 
-func (job *SQLiteReaderJob) Init(config *config.Configuration) error {
+func (job *SQLiteReaderJob) Init(config config.Configuration) error {
 	job.config = config
 
 	// 获取连接信息
@@ -61,26 +66,29 @@ func (job *SQLiteReaderJob) Init(config *config.Configuration) error {
 	job.where = config.GetString("parameter.where")
 	job.splitPk = config.GetString("parameter.splitPk")
 
-	log.Printf("SQLite Reader initialized: tables=%v, columns=%v", job.tables, job.columns)
+	logger.Component().WithComponent("SQLiteReader").Info("SQLite Reader initialized",
+		zap.Any("tables", job.tables),
+		zap.Any("columns", job.columns))
 	return nil
 }
 
-func (job *SQLiteReaderJob) Split(adviceNumber int) ([]*config.Configuration, error) {
-	taskConfigs := make([]*config.Configuration, 0)
+func (job *SQLiteReaderJob) Split(adviceNumber int) ([]config.Configuration, error) {
+	taskConfigs := make([]config.Configuration, 0)
 
 	// 如果没有设置splitPk，则不进行分片，使用单个任务
 	if job.splitPk == "" {
 		taskConfig := job.config.Clone()
 		taskConfig.Set("taskId", 0)
 		taskConfigs = append(taskConfigs, taskConfig)
-		log.Printf("No splitPk specified, using single task")
+		logger.Component().WithComponent("SQLiteReader").Info("No splitPk specified, using single task")
 		return taskConfigs, nil
 	}
 
 	// 如果设置了splitPk，尝试进行分片
 	ranges, err := job.calculateSplitRanges(adviceNumber)
 	if err != nil {
-		log.Printf("Failed to calculate split ranges, fallback to single task: %v", err)
+		logger.Component().WithComponent("SQLiteReader").Warn("Failed to calculate split ranges, fallback to single task",
+			zap.Error(err))
 		taskConfig := job.config.Clone()
 		taskConfig.Set("taskId", 0)
 		taskConfigs = append(taskConfigs, taskConfig)
@@ -95,7 +103,9 @@ func (job *SQLiteReaderJob) Split(adviceNumber int) ([]*config.Configuration, er
 		taskConfigs = append(taskConfigs, taskConfig)
 	}
 
-	log.Printf("Split into %d tasks based on splitPk: %s", len(taskConfigs), job.splitPk)
+	logger.Component().WithComponent("SQLiteReader").Info("Split into tasks based on splitPk",
+		zap.Int("taskCount", len(taskConfigs)),
+		zap.String("splitPk", job.splitPk))
 	return taskConfigs, nil
 }
 
@@ -163,7 +173,7 @@ func (job *SQLiteReaderJob) connect() (*gorm.DB, error) {
 
 	// 连接数据库
 	db, err := gorm.Open(sqlite.Open(dbPath), &gorm.Config{
-		Logger: logger.Default.LogMode(logger.Silent),
+		Logger: gormLogger.Default.LogMode(gormLogger.Silent),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect to database: %v", err)
@@ -194,16 +204,19 @@ func (job *SQLiteReaderJob) Destroy() error {
 
 // SQLiteReaderTask SQLite读取任务
 type SQLiteReaderTask struct {
-	config    *config.Configuration
+	config    config.Configuration
 	readerJob *SQLiteReaderJob
 	db        *gorm.DB
+	factory   *factory.DataXFactory
 }
 
 func NewSQLiteReaderTask() *SQLiteReaderTask {
-	return &SQLiteReaderTask{}
+	return &SQLiteReaderTask{
+		factory: factory.GetGlobalFactory(),
+	}
 }
 
-func (task *SQLiteReaderTask) Init(config *config.Configuration) error {
+func (task *SQLiteReaderTask) Init(config config.Configuration) error {
 	task.config = config
 
 	// 创建ReaderJob来重用连接逻辑
@@ -235,7 +248,8 @@ func (task *SQLiteReaderTask) StartRead(recordSender plugin.RecordSender) error 
 		return err
 	}
 
-	log.Printf("Executing query: %s", query)
+	logger.Component().WithComponent("SQLiteReader").Info("Executing query",
+		zap.String("query", query))
 
 	// 执行查询
 	rows, err := task.db.Raw(query).Rows()
@@ -266,7 +280,7 @@ func (task *SQLiteReaderTask) StartRead(recordSender plugin.RecordSender) error 
 		}
 
 		// 创建记录
-		record := element.NewRecord()
+		record := task.factory.GetRecordFactory().CreateRecord()
 		for _, value := range values {
 			column := task.convertToColumn(value)
 			record.AddColumn(column)
@@ -279,11 +293,13 @@ func (task *SQLiteReaderTask) StartRead(recordSender plugin.RecordSender) error 
 
 		recordCount++
 		if recordCount%1000 == 0 {
-			log.Printf("Read %d records", recordCount)
+			logger.Component().WithComponent("SQLiteReader").Info("Reading progress",
+				zap.Int("recordCount", recordCount))
 		}
 	}
 
-	log.Printf("Total records read: %d", recordCount)
+	logger.Component().WithComponent("SQLiteReader").Info("Reading completed",
+		zap.Int("totalRecords", recordCount))
 	return nil
 }
 
@@ -328,32 +344,33 @@ func (task *SQLiteReaderTask) buildQuery() (string, error) {
 }
 
 func (task *SQLiteReaderTask) convertToColumn(value interface{}) element.Column {
+	columnFactory := task.factory.GetColumnFactory()
 	if value == nil {
-		return element.NewStringColumn("")
+		return columnFactory.CreateStringColumn("")
 	}
 
 	switch v := value.(type) {
 	case int64:
-		return element.NewLongColumn(v)
+		return columnFactory.CreateLongColumn(v)
 	case int32:
-		return element.NewLongColumn(int64(v))
+		return columnFactory.CreateLongColumn(int64(v))
 	case int:
-		return element.NewLongColumn(int64(v))
+		return columnFactory.CreateLongColumn(int64(v))
 	case float64:
-		return element.NewDoubleColumn(v)
+		return columnFactory.CreateDoubleColumn(v)
 	case float32:
-		return element.NewDoubleColumn(float64(v))
+		return columnFactory.CreateDoubleColumn(float64(v))
 	case string:
-		return element.NewStringColumn(v)
+		return columnFactory.CreateStringColumn(v)
 	case []byte:
-		return element.NewStringColumn(string(v))
+		return columnFactory.CreateStringColumn(string(v))
 	case time.Time:
-		return element.NewDateColumn(v)
+		return columnFactory.CreateDateColumn(v)
 	case bool:
-		return element.NewBoolColumn(v)
+		return columnFactory.CreateBoolColumn(v)
 	default:
 		// 其他类型转换为字符串
-		return element.NewStringColumn(fmt.Sprintf("%v", v))
+		return columnFactory.CreateStringColumn(fmt.Sprintf("%v", v))
 	}
 }
 

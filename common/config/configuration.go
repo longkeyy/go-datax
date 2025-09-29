@@ -8,24 +8,47 @@ import (
 	"strings"
 )
 
-// Configuration 配置管理
-type Configuration struct {
+// DefaultConfigurationFactory 默认配置工厂实现
+type DefaultConfigurationFactory struct{}
+
+func NewConfigurationFactory() ConfigurationFactory {
+	return &DefaultConfigurationFactory{}
+}
+
+func (f *DefaultConfigurationFactory) CreateConfiguration() Configuration {
+	return NewConfiguration()
+}
+
+func (f *DefaultConfigurationFactory) CreateConfigurationFromMap(data map[string]interface{}) Configuration {
+	return NewConfigurationFromMap(data)
+}
+
+func (f *DefaultConfigurationFactory) FromJSON(jsonStr string) (Configuration, error) {
+	return FromJSON(jsonStr)
+}
+
+func (f *DefaultConfigurationFactory) FromFile(filename string) (Configuration, error) {
+	return FromFile(filename)
+}
+
+// DefaultConfiguration 默认配置实现
+type DefaultConfiguration struct {
 	data map[string]interface{}
 }
 
-func NewConfiguration() *Configuration {
-	return &Configuration{
+func NewConfiguration() Configuration {
+	return &DefaultConfiguration{
 		data: make(map[string]interface{}),
 	}
 }
 
-func NewConfigurationFromMap(data map[string]interface{}) *Configuration {
-	return &Configuration{
+func NewConfigurationFromMap(data map[string]interface{}) Configuration {
+	return &DefaultConfiguration{
 		data: data,
 	}
 }
 
-func FromJSON(jsonStr string) (*Configuration, error) {
+func FromJSON(jsonStr string) (Configuration, error) {
 	var data map[string]interface{}
 	err := json.Unmarshal([]byte(jsonStr), &data)
 	if err != nil {
@@ -34,7 +57,7 @@ func FromJSON(jsonStr string) (*Configuration, error) {
 	return NewConfigurationFromMap(data), nil
 }
 
-func FromFile(filename string) (*Configuration, error) {
+func FromFile(filename string) (Configuration, error) {
 	content, err := ioutil.ReadFile(filename)
 	if err != nil {
 		return nil, err
@@ -42,7 +65,7 @@ func FromFile(filename string) (*Configuration, error) {
 	return FromJSON(string(content))
 }
 
-func (c *Configuration) Set(path string, value interface{}) {
+func (c *DefaultConfiguration) Set(path string, value interface{}) {
 	keys := strings.Split(path, ".")
 	current := c.data
 
@@ -63,7 +86,7 @@ func (c *Configuration) Set(path string, value interface{}) {
 	}
 }
 
-func (c *Configuration) Get(path string) interface{} {
+func (c *DefaultConfiguration) Get(path string) interface{} {
 	keys := strings.Split(path, ".")
 	current := c.data
 
@@ -81,7 +104,7 @@ func (c *Configuration) Get(path string) interface{} {
 	return current
 }
 
-func (c *Configuration) GetString(path string) string {
+func (c *DefaultConfiguration) GetString(path string) string {
 	value := c.Get(path)
 	if value == nil {
 		return ""
@@ -92,7 +115,7 @@ func (c *Configuration) GetString(path string) string {
 	return fmt.Sprintf("%v", value)
 }
 
-func (c *Configuration) GetStringWithDefault(path, defaultValue string) string {
+func (c *DefaultConfiguration) GetStringWithDefault(path, defaultValue string) string {
 	value := c.GetString(path)
 	if value == "" {
 		return defaultValue
@@ -100,7 +123,7 @@ func (c *Configuration) GetStringWithDefault(path, defaultValue string) string {
 	return value
 }
 
-func (c *Configuration) GetInt(path string) int {
+func (c *DefaultConfiguration) GetInt(path string) int {
 	value := c.Get(path)
 	if value == nil {
 		return 0
@@ -121,7 +144,7 @@ func (c *Configuration) GetInt(path string) int {
 	return 0
 }
 
-func (c *Configuration) GetIntWithDefault(path string, defaultValue int) int {
+func (c *DefaultConfiguration) GetIntWithDefault(path string, defaultValue int) int {
 	value := c.GetInt(path)
 	if value == 0 && c.Get(path) == nil {
 		return defaultValue
@@ -129,7 +152,7 @@ func (c *Configuration) GetIntWithDefault(path string, defaultValue int) int {
 	return value
 }
 
-func (c *Configuration) GetLong(path string) int64 {
+func (c *DefaultConfiguration) GetLong(path string) int64 {
 	value := c.Get(path)
 	if value == nil {
 		return 0
@@ -150,7 +173,7 @@ func (c *Configuration) GetLong(path string) int64 {
 	return 0
 }
 
-func (c *Configuration) GetLongWithDefault(path string, defaultValue int64) int64 {
+func (c *DefaultConfiguration) GetLongWithDefault(path string, defaultValue int64) int64 {
 	value := c.GetLong(path)
 	if value == 0 && c.Get(path) == nil {
 		return defaultValue
@@ -158,7 +181,7 @@ func (c *Configuration) GetLongWithDefault(path string, defaultValue int64) int6
 	return value
 }
 
-func (c *Configuration) GetBool(path string) bool {
+func (c *DefaultConfiguration) GetBool(path string) bool {
 	value := c.Get(path)
 	if value == nil {
 		return false
@@ -173,14 +196,14 @@ func (c *Configuration) GetBool(path string) bool {
 	return false
 }
 
-func (c *Configuration) GetBoolWithDefault(path string, defaultValue bool) bool {
+func (c *DefaultConfiguration) GetBoolWithDefault(path string, defaultValue bool) bool {
 	if c.Get(path) == nil {
 		return defaultValue
 	}
 	return c.GetBool(path)
 }
 
-func (c *Configuration) GetList(path string) []interface{} {
+func (c *DefaultConfiguration) GetList(path string) []interface{} {
 	value := c.Get(path)
 	if value == nil {
 		return nil
@@ -191,7 +214,7 @@ func (c *Configuration) GetList(path string) []interface{} {
 	return nil
 }
 
-func (c *Configuration) GetStringList(path string) []string {
+func (c *DefaultConfiguration) GetStringList(path string) []string {
 	list := c.GetList(path)
 	if list == nil {
 		return nil
@@ -204,7 +227,22 @@ func (c *Configuration) GetStringList(path string) []string {
 	return result
 }
 
-func (c *Configuration) GetConfiguration(path string) *Configuration {
+func (c *DefaultConfiguration) GetStringArray(path string) []string {
+	return c.GetStringList(path)
+}
+
+func (c *DefaultConfiguration) GetMap(path string) map[string]interface{} {
+	value := c.Get(path)
+	if value == nil {
+		return nil
+	}
+	if mapVal, ok := value.(map[string]interface{}); ok {
+		return mapVal
+	}
+	return nil
+}
+
+func (c *DefaultConfiguration) GetConfiguration(path string) Configuration {
 	value := c.Get(path)
 	if value == nil {
 		return NewConfiguration()
@@ -215,13 +253,13 @@ func (c *Configuration) GetConfiguration(path string) *Configuration {
 	return NewConfiguration()
 }
 
-func (c *Configuration) GetListConfiguration(path string) []*Configuration {
+func (c *DefaultConfiguration) GetListConfiguration(path string) []Configuration {
 	list := c.GetList(path)
 	if list == nil {
 		return nil
 	}
 
-	result := make([]*Configuration, 0, len(list))
+	result := make([]Configuration, 0, len(list))
 	for _, item := range list {
 		if configMap, ok := item.(map[string]interface{}); ok {
 			result = append(result, NewConfigurationFromMap(configMap))
@@ -230,7 +268,7 @@ func (c *Configuration) GetListConfiguration(path string) []*Configuration {
 	return result
 }
 
-func (c *Configuration) ToJSON() (string, error) {
+func (c *DefaultConfiguration) ToJSON() (string, error) {
 	bytes, err := json.MarshalIndent(c.data, "", "  ")
 	if err != nil {
 		return "", err
@@ -238,27 +276,12 @@ func (c *Configuration) ToJSON() (string, error) {
 	return string(bytes), nil
 }
 
-func (c *Configuration) Clone() *Configuration {
+func (c *DefaultConfiguration) Clone() Configuration {
 	jsonStr, _ := c.ToJSON()
 	clone, _ := FromJSON(jsonStr)
 	return clone
 }
 
-func (c *Configuration) IsExists(path string) bool {
+func (c *DefaultConfiguration) IsExists(path string) bool {
 	return c.Get(path) != nil
-}
-
-func (c *Configuration) GetStringArray(path string) []string {
-	return c.GetStringList(path)
-}
-
-func (c *Configuration) GetMap(path string) map[string]interface{} {
-	value := c.Get(path)
-	if value == nil {
-		return nil
-	}
-	if mapVal, ok := value.(map[string]interface{}); ok {
-		return mapVal
-	}
-	return nil
 }

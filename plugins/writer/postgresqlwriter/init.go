@@ -2,15 +2,27 @@ package postgresqlwriter
 
 import (
 	"github.com/longkeyy/go-datax/common/plugin"
+	"github.com/longkeyy/go-datax/common/factory"
 )
 
-func init() {
-	// 注册PostgreSQL Writer插件
-	plugin.RegisterWriterJob("postgresqlwriter", func() plugin.WriterJob {
-		return NewPostgreSQLWriterJob()
-	})
+// PostgreSQLWriterJobFactory 实现WriterJobFactory接口
+type PostgreSQLWriterJobFactory struct{}
 
-	plugin.RegisterWriterTask("postgresqlwriter", func() plugin.WriterTask {
-		return NewPostgreSQLWriterTask()
-	})
+func (f *PostgreSQLWriterJobFactory) CreateWriterJob() plugin.WriterJob {
+	return NewPostgreSQLWriterJob()
+}
+
+// PostgreSQLWriterTaskFactory 实现WriterTaskFactory接口
+type PostgreSQLWriterTaskFactory struct{}
+
+func (f *PostgreSQLWriterTaskFactory) CreateWriterTask() plugin.WriterTask {
+	return NewPostgreSQLWriterTask()
+}
+
+func init() {
+	factoryInstance := factory.GetGlobalFactory()
+	registry := factoryInstance.GetPluginRegistry()
+
+	registry.RegisterWriterJob("postgresqlwriter", &PostgreSQLWriterJobFactory{})
+	registry.RegisterWriterTask("postgresqlwriter", &PostgreSQLWriterTaskFactory{})
 }

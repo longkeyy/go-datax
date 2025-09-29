@@ -9,9 +9,10 @@ import (
 
 	"github.com/longkeyy/go-datax/common/config"
 	"github.com/longkeyy/go-datax/common/element"
-	"github.com/longkeyy/go-datax/common/logger"
 	"github.com/longkeyy/go-datax/common/plugin"
-	"github.com/longkeyy/go-datax/common/rdbms/writer"
+	"github.com/longkeyy/go-datax/common/logger"
+	"github.com/longkeyy/go-datax/common/database/rdbms/writer"
+	"github.com/longkeyy/go-datax/common/factory"
 	"go.uber.org/zap"
 
 	// 使用go-ora纯Go驱动，无需Oracle客户端库
@@ -25,7 +26,7 @@ const (
 
 // OracleReaderJob Oracle读取作业
 type OracleReaderJob struct {
-	config   *config.Configuration
+	config   config.Configuration
 	username string
 	password string
 	jdbcUrl  string
@@ -36,13 +37,16 @@ type OracleReaderJob struct {
 	querySql string
 	session  []string
 	hint     string
+	factory  *factory.DataXFactory
 }
 
 func NewOracleReaderJob() *OracleReaderJob {
-	return &OracleReaderJob{}
+	return &OracleReaderJob{
+		factory: factory.GetGlobalFactory(),
+	}
 }
 
-func (job *OracleReaderJob) Init(config *config.Configuration) error {
+func (job *OracleReaderJob) Init(config config.Configuration) error {
 	job.config = config
 	compLogger := logger.Component().WithComponent("OracleReaderJob")
 
@@ -99,8 +103,8 @@ func (job *OracleReaderJob) Prepare() error {
 	return nil
 }
 
-func (job *OracleReaderJob) Split(adviceNumber int) ([]*config.Configuration, error) {
-	taskConfigs := make([]*config.Configuration, 0)
+func (job *OracleReaderJob) Split(adviceNumber int) ([]config.Configuration, error) {
+	taskConfigs := make([]config.Configuration, 0)
 	compLogger := logger.Component().WithComponent("OracleReaderJob")
 
 	for _, table := range job.tables {
@@ -272,17 +276,20 @@ func (job *OracleReaderJob) Destroy() error {
 
 // OracleReaderTask Oracle读取任务
 type OracleReaderTask struct {
-	config    *config.Configuration
+	config    config.Configuration
 	readerJob *OracleReaderJob
 	db        *sql.DB
 	table     string
+	factory   *factory.DataXFactory
 }
 
 func NewOracleReaderTask() *OracleReaderTask {
-	return &OracleReaderTask{}
+	return &OracleReaderTask{
+		factory: factory.GetGlobalFactory(),
+	}
 }
 
-func (task *OracleReaderTask) Init(config *config.Configuration) error {
+func (task *OracleReaderTask) Init(config config.Configuration) error {
 	task.config = config
 	compLogger := logger.Component().WithComponent("OracleReaderTask")
 
@@ -374,7 +381,7 @@ func (task *OracleReaderTask) StartRead(recordSender plugin.RecordSender) error 
 
 	// 逐行处理数据
 	for rows.Next() {
-		record := element.NewRecord()
+		record := task.factory.GetRecordFactory().CreateRecord()
 
 		// 创建扫描目标
 		values := make([]interface{}, len(columns))
@@ -481,7 +488,7 @@ func (task *OracleReaderTask) getTableColumns() ([]string, error) {
 
 func (task *OracleReaderTask) convertValue(value interface{}, columnType *sql.ColumnType) (element.Column, error) {
 	if value == nil {
-		return element.NewStringColumn(""), nil
+		return task.factory.GetColumnFactory().CreateStringColumn(""), nil
 	}
 
 	typeName := strings.ToUpper(columnType.DatabaseTypeName())
@@ -490,47 +497,47 @@ func (task *OracleReaderTask) convertValue(value interface{}, columnType *sql.Co
 	case "NUMBER", "INTEGER", "INT", "SMALLINT", "BIGINT":
 		switch v := value.(type) {
 		case int64:
-			return element.NewLongColumn(v), nil
+			return task.factory.GetColumnFactory().CreateLongColumn(v), nil
 		case float64:
 			// Oracle NUMBER类型可能返回float64
 			if v == float64(int64(v)) {
-				return element.NewLongColumn(int64(v)), nil
+				return task.factory.GetColumnFactory().CreateLongColumn(int64(v)), nil
 			}
-			return element.NewDoubleColumn(v), nil
+			return task.factory.GetColumnFactory().CreateDoubleColumn(v), nil
 		case string:
 			if intVal, err := strconv.ParseInt(v, 10, 64); err == nil {
-				return element.NewLongColumn(intVal), nil
+				return task.factory.GetColumnFactory().CreateLongColumn(intVal), nil
 			}
 			if floatVal, err := strconv.ParseFloat(v, 64); err == nil {
-				return element.NewDoubleColumn(floatVal), nil
+				return task.factory.GetColumnFactory().CreateDoubleColumn(floatVal), nil
 			}
-			return element.NewStringColumn(v), nil
+			return task.factory.GetColumnFactory().CreateStringColumn(v), nil
 		default:
-			return element.NewStringColumn(fmt.Sprintf("%v", v)), nil
+			return task.factory.GetColumnFactory().CreateStringColumn(fmt.Sprintf("%v", v)), nil
 		}
 
 	case "NUMERIC", "DECIMAL", "FLOAT", "DOUBLE PRECISION", "REAL":
 		switch v := value.(type) {
 		case float64:
-			return element.NewDoubleColumn(v), nil
+			return task.factory.GetColumnFactory().CreateDoubleColumn(v), nil
 		case int64:
-			return element.NewDoubleColumn(float64(v)), nil
+			return task.factory.GetColumnFactory().CreateDoubleColumn(float64(v)), nil
 		case string:
 			if floatVal, err := strconv.ParseFloat(v, 64); err == nil {
-				return element.NewDoubleColumn(floatVal), nil
+				return task.factory.GetColumnFactory().CreateDoubleColumn(floatVal), nil
 			}
-			return element.NewStringColumn(v), nil
+			return task.factory.GetColumnFactory().CreateStringColumn(v), nil
 		default:
-			return element.NewStringColumn(fmt.Sprintf("%v", v)), nil
+			return task.factory.GetColumnFactory().CreateStringColumn(fmt.Sprintf("%v", v)), nil
 		}
 
 	case "CHAR", "NCHAR", "VARCHAR", "VARCHAR2", "NVARCHAR2", "CLOB", "NCLOB", "LONG":
-		return element.NewStringColumn(fmt.Sprintf("%v", value)), nil
+		return task.factory.GetColumnFactory().CreateStringColumn(fmt.Sprintf("%v", value)), nil
 
 	case "DATE", "TIMESTAMP", "TIMESTAMP WITH TIME ZONE", "TIMESTAMP WITH LOCAL TIME ZONE":
 		switch v := value.(type) {
 		case time.Time:
-			return element.NewDateColumn(v), nil
+			return task.factory.GetColumnFactory().CreateDateColumn(v), nil
 		case string:
 			// 尝试解析常见的时间格式
 			timeFormats := []string{
@@ -541,24 +548,24 @@ func (task *OracleReaderTask) convertValue(value interface{}, columnType *sql.Co
 			}
 			for _, format := range timeFormats {
 				if t, err := time.Parse(format, v); err == nil {
-					return element.NewDateColumn(t), nil
+					return task.factory.GetColumnFactory().CreateDateColumn(t), nil
 				}
 			}
-			return element.NewStringColumn(v), nil
+			return task.factory.GetColumnFactory().CreateStringColumn(v), nil
 		default:
-			return element.NewStringColumn(fmt.Sprintf("%v", v)), nil
+			return task.factory.GetColumnFactory().CreateStringColumn(fmt.Sprintf("%v", v)), nil
 		}
 
 	case "BLOB", "BFILE", "RAW", "LONG RAW":
 		switch v := value.(type) {
 		case []byte:
-			return element.NewBytesColumn(v), nil
+			return task.factory.GetColumnFactory().CreateBytesColumn(v), nil
 		default:
-			return element.NewStringColumn(fmt.Sprintf("%v", value)), nil
+			return task.factory.GetColumnFactory().CreateStringColumn(fmt.Sprintf("%v", value)), nil
 		}
 
 	default:
-		return element.NewStringColumn(fmt.Sprintf("%v", value)), nil
+		return task.factory.GetColumnFactory().CreateStringColumn(fmt.Sprintf("%v", value)), nil
 	}
 }
 

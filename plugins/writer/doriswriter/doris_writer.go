@@ -16,6 +16,8 @@ import (
 	"github.com/longkeyy/go-datax/common/config"
 	"github.com/longkeyy/go-datax/common/element"
 	"github.com/longkeyy/go-datax/common/plugin"
+	"github.com/longkeyy/go-datax/common/factory"
+	coreplugin "github.com/longkeyy/go-datax/core/registry"
 	"gorm.io/driver/mysql"
 	"gorm.io/gorm"
 )
@@ -30,7 +32,7 @@ const (
 
 // DorisWriterJob Doris写入作业
 type DorisWriterJob struct {
-	config           *config.Configuration
+	config           config.Configuration
 	loadUrls         []string
 	username         string
 	password         string
@@ -46,6 +48,7 @@ type DorisWriterJob struct {
 	labelPrefix      string
 	preSql           []string
 	postSql          []string
+	factory          *factory.DataXFactory
 }
 
 func NewDorisWriterJob() *DorisWriterJob {
@@ -60,10 +63,11 @@ func NewDorisWriterJob() *DorisWriterJob {
 			"column_separator": "\\t",
 			"line_delimiter":   "\\n",
 		},
+		factory: factory.GetGlobalFactory(),
 	}
 }
 
-func (job *DorisWriterJob) Init(config *config.Configuration) error {
+func (job *DorisWriterJob) Init(config config.Configuration) error {
 	job.config = config
 
 	// 获取必需参数
@@ -207,11 +211,11 @@ func (job *DorisWriterJob) executeSql(sqlList []string) error {
 	return nil
 }
 
-func (job *DorisWriterJob) Split(adviceNumber int) ([]*config.Configuration, error) {
-	taskConfigs := make([]*config.Configuration, 0)
+func (job *DorisWriterJob) Split(mandatoryNumber int) ([]config.Configuration, error) {
+	taskConfigs := make([]config.Configuration, 0)
 
 	// 创建指定数量的任务配置
-	for i := 0; i < adviceNumber; i++ {
+	for i := 0; i < mandatoryNumber; i++ {
 		taskConfig := job.config.Clone()
 		taskConfig.Set("taskId", i)
 		taskConfigs = append(taskConfigs, taskConfig)
@@ -238,22 +242,24 @@ func (job *DorisWriterJob) Destroy() error {
 
 // DorisWriterTask Doris写入任务
 type DorisWriterTask struct {
-	config      *config.Configuration
+	config      config.Configuration
 	writerJob   *DorisWriterJob
 	buffer      []element.Record
 	bufferSize  int64
 	httpClient  *http.Client
 	currentUrl  int
+	factory     *factory.DataXFactory
 }
 
 func NewDorisWriterTask() *DorisWriterTask {
 	return &DorisWriterTask{
 		buffer:     make([]element.Record, 0),
 		httpClient: &http.Client{Timeout: 300 * time.Second},
+		factory:    factory.GetGlobalFactory(),
 	}
 }
 
-func (task *DorisWriterTask) Init(config *config.Configuration) error {
+func (task *DorisWriterTask) Init(config config.Configuration) error {
 	task.config = config
 
 	// 创建WriterJob来重用配置逻辑
@@ -285,7 +291,7 @@ func (task *DorisWriterTask) StartWrite(recordReceiver plugin.RecordReceiver) er
 	for {
 		record, err := recordReceiver.GetFromReader()
 		if err != nil {
-			if err == plugin.ErrChannelClosed {
+			if err == coreplugin.ErrChannelClosed {
 				break
 			}
 			return fmt.Errorf("failed to receive record: %v", err)
@@ -407,7 +413,7 @@ func (task *DorisWriterTask) formatAsCSV() ([]byte, error) {
 
 		for i := 0; i < len(task.writerJob.columns) && i < columnCount; i++ {
 			column := record.GetColumn(i)
-			if column == nil || column.IsNull() {
+			if column == nil {
 				row[i] = "\\N" // Doris的NULL表示
 			} else {
 				row[i] = column.GetAsString()
@@ -439,7 +445,7 @@ func (task *DorisWriterTask) formatAsJSON() ([]byte, error) {
 			column := record.GetColumn(i)
 			columnName := task.writerJob.columns[i]
 
-			if column == nil || column.IsNull() {
+			if column == nil {
 				row[columnName] = nil
 			} else {
 				row[columnName] = task.convertColumnForJSON(column)
@@ -453,6 +459,7 @@ func (task *DorisWriterTask) formatAsJSON() ([]byte, error) {
 }
 
 func (task *DorisWriterTask) convertColumnForJSON(column element.Column) interface{} {
+	// 使用新的Column接口方法
 	switch column.GetType() {
 	case element.TypeLong:
 		if val, err := column.GetAsLong(); err == nil {

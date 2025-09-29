@@ -11,6 +11,8 @@ import (
 	"github.com/longkeyy/go-datax/common/config"
 	"github.com/longkeyy/go-datax/common/element"
 	"github.com/longkeyy/go-datax/common/plugin"
+	"github.com/longkeyy/go-datax/common/factory"
+	coreplugin "github.com/longkeyy/go-datax/core/registry"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/bson/primitive"
 	"go.mongodb.org/mongo-driver/mongo"
@@ -23,7 +25,7 @@ const (
 
 // MongoWriterJob MongoDB写入作业
 type MongoWriterJob struct {
-	config         *config.Configuration
+	config         config.Configuration
 	addresses      []string
 	userName       string
 	userPassword   string
@@ -33,6 +35,7 @@ type MongoWriterJob struct {
 	preSql         []string
 	writeMode      map[string]interface{}
 	batchSize      int
+	factory        *factory.DataXFactory
 }
 
 func NewMongoWriterJob() *MongoWriterJob {
@@ -41,10 +44,11 @@ func NewMongoWriterJob() *MongoWriterJob {
 		writeMode: map[string]interface{}{
 			"isReplace": "false",
 		},
+		factory: factory.GetGlobalFactory(),
 	}
 }
 
-func (job *MongoWriterJob) Init(config *config.Configuration) error {
+func (job *MongoWriterJob) Init(config config.Configuration) error {
 	job.config = config
 
 	// 获取必需参数
@@ -177,11 +181,11 @@ func (job *MongoWriterJob) createMongoClient() (*mongo.Client, error) {
 	return client, nil
 }
 
-func (job *MongoWriterJob) Split(adviceNumber int) ([]*config.Configuration, error) {
-	taskConfigs := make([]*config.Configuration, 0)
+func (job *MongoWriterJob) Split(mandatoryNumber int) ([]config.Configuration, error) {
+	taskConfigs := make([]config.Configuration, 0)
 
 	// 创建指定数量的任务配置
-	for i := 0; i < adviceNumber; i++ {
+	for i := 0; i < mandatoryNumber; i++ {
 		taskConfig := job.config.Clone()
 		taskConfig.Set("taskId", i)
 		taskConfigs = append(taskConfigs, taskConfig)
@@ -201,19 +205,21 @@ func (job *MongoWriterJob) Destroy() error {
 
 // MongoWriterTask MongoDB写入任务
 type MongoWriterTask struct {
-	config    *config.Configuration
+	config    config.Configuration
 	writerJob *MongoWriterJob
 	client    *mongo.Client
 	buffer    []bson.M
+	factory   *factory.DataXFactory
 }
 
 func NewMongoWriterTask() *MongoWriterTask {
 	return &MongoWriterTask{
-		buffer: make([]bson.M, 0),
+		buffer:  make([]bson.M, 0),
+		factory: factory.GetGlobalFactory(),
 	}
 }
 
-func (task *MongoWriterTask) Init(config *config.Configuration) error {
+func (task *MongoWriterTask) Init(config config.Configuration) error {
 	task.config = config
 
 	// 创建WriterJob来重用配置逻辑
@@ -256,7 +262,7 @@ func (task *MongoWriterTask) StartWrite(recordReceiver plugin.RecordReceiver) er
 	for {
 		record, err := recordReceiver.GetFromReader()
 		if err != nil {
-			if err == plugin.ErrChannelClosed {
+			if err == coreplugin.ErrChannelClosed {
 				break
 			}
 			return fmt.Errorf("failed to receive record: %v", err)
@@ -297,7 +303,7 @@ func (task *MongoWriterTask) recordToDocument(record element.Record) bson.M {
 		itemType, _ := columnConfig["itemtype"].(string)
 
 		column := record.GetColumn(i)
-		if column == nil || column.IsNull() {
+		if column == nil {
 			doc[fieldName] = nil
 			continue
 		}
@@ -310,7 +316,7 @@ func (task *MongoWriterTask) recordToDocument(record element.Record) bson.M {
 }
 
 func (task *MongoWriterTask) convertColumnValue(column element.Column, fieldType, splitter, itemType string) interface{} {
-	if column.IsNull() {
+	if column == nil {
 		return nil
 	}
 

@@ -7,41 +7,42 @@ import (
 
 	"github.com/longkeyy/go-datax/common/config"
 	"github.com/longkeyy/go-datax/common/logger"
+	coreconfig "github.com/longkeyy/go-datax/common/config"
 	"github.com/longkeyy/go-datax/core/job"
 	"go.uber.org/zap"
 )
 
-// Engine DataX引擎入口类
+// Engine provides the main entry point for DataX execution,
+// orchestrating job containers and managing execution flow.
 type Engine struct {
-	configuration *config.Configuration
+	configuration config.Configuration
 }
 
 func NewEngine() *Engine {
 	return &Engine{}
 }
 
-func (e *Engine) Start(allConf *config.Configuration) error {
+func (e *Engine) Start(allConf config.Configuration) error {
 	if allConf == nil {
 		return fmt.Errorf("configuration cannot be nil")
 	}
 
 	e.configuration = allConf
 
-	// 检查是否为Job模式
+	// Currently only job mode is supported (taskgroup mode planned for future)
 	isJob := allConf.GetStringWithDefault("core.container.model", "job") == "job"
 
 	if isJob {
-		// 创建JobContainer并启动
 		jobContainer := job.NewJobContainer(allConf)
 		return jobContainer.Start()
 	} else {
-		// TaskGroup模式暂不实现
+		// TaskGroup mode deferred for future implementation
 		return fmt.Errorf("taskGroup mode not implemented yet")
 	}
 }
 
 func (e *Engine) Entry(args []string) error {
-	// 解析命令行参数
+	// Parse command line arguments for job configuration path
 	jobPath := ""
 	if len(args) > 0 {
 		for i, arg := range args {
@@ -56,24 +57,22 @@ func (e *Engine) Entry(args []string) error {
 		return fmt.Errorf("job configuration file path is required, use -job <path>")
 	}
 
-	// 解析配置文件
-	configuration, err := config.FromFile(jobPath)
+	configuration, err := coreconfig.FromFile(jobPath)
 	if err != nil {
 		return fmt.Errorf("failed to parse configuration file: %v", err)
 	}
 
-	// 打印配置信息（过滤敏感信息）
+	// Log configuration for debugging (sensitive data already filtered)
 	appLogger := logger.App()
 	if jsonStr, err := configuration.ToJSON(); err == nil {
 		appLogger.Debug("Job configuration loaded", zap.String("config", jsonStr))
 	}
 
-	// 启动引擎
 	return e.Start(configuration)
 }
 
 func Main(ver string) {
-	// 初始化zap日志器
+	// Setup structured logging with zap
 	logConfig := &logger.LoggerConfig{
 		Level:       logger.LevelInfo,
 		Development: true,
@@ -86,7 +85,6 @@ func Main(ver string) {
 	}
 	defer logger.Sync()
 
-	// 使用应用级日志器
 	appLogger := logger.App()
 	appLogger.Info("DataX Go starting",
 		zap.String("version", ver))

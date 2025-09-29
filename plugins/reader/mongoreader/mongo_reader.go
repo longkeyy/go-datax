@@ -12,6 +12,7 @@ import (
 	"github.com/longkeyy/go-datax/common/config"
 	"github.com/longkeyy/go-datax/common/element"
 	"github.com/longkeyy/go-datax/common/plugin"
+	"github.com/longkeyy/go-datax/common/factory"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/bson/primitive"
 	"go.mongodb.org/mongo-driver/mongo"
@@ -20,7 +21,7 @@ import (
 
 // MongoReaderJob MongoDB读取作业
 type MongoReaderJob struct {
-	config         *config.Configuration
+	config         config.Configuration
 	addresses      []string
 	userName       string
 	userPassword   string
@@ -38,7 +39,7 @@ func NewMongoReaderJob() *MongoReaderJob {
 	}
 }
 
-func (job *MongoReaderJob) Init(config *config.Configuration) error {
+func (job *MongoReaderJob) Init(config config.Configuration) error {
 	job.config = config
 
 	// 获取必需参数
@@ -99,8 +100,8 @@ func (job *MongoReaderJob) Prepare() error {
 	return nil
 }
 
-func (job *MongoReaderJob) Split(adviceNumber int) ([]*config.Configuration, error) {
-	taskConfigs := make([]*config.Configuration, 0)
+func (job *MongoReaderJob) Split(adviceNumber int) ([]config.Configuration, error) {
+	taskConfigs := make([]config.Configuration, 0)
 
 	// 创建指定数量的任务配置
 	for i := 0; i < adviceNumber; i++ {
@@ -123,16 +124,19 @@ func (job *MongoReaderJob) Destroy() error {
 
 // MongoReaderTask MongoDB读取任务
 type MongoReaderTask struct {
-	config    *config.Configuration
+	config    config.Configuration
 	readerJob *MongoReaderJob
 	client    *mongo.Client
+	factory   *factory.DataXFactory
 }
 
 func NewMongoReaderTask() *MongoReaderTask {
-	return &MongoReaderTask{}
+	return &MongoReaderTask{
+		factory: factory.GetGlobalFactory(),
+	}
 }
 
-func (task *MongoReaderTask) Init(config *config.Configuration) error {
+func (task *MongoReaderTask) Init(config config.Configuration) error {
 	task.config = config
 
 	// 创建ReaderJob来重用配置逻辑
@@ -230,7 +234,7 @@ func (task *MongoReaderTask) StartRead(recordSender plugin.RecordSender) error {
 		}
 
 		// 转换文档为DataX记录
-		record := element.NewRecord()
+		record := task.factory.GetRecordFactory().CreateRecord()
 		for _, columnConfig := range task.readerJob.columns {
 			column := task.convertDocumentField(doc, columnConfig)
 			record.AddColumn(column)
@@ -264,81 +268,81 @@ func (task *MongoReaderTask) convertDocumentField(doc bson.M, columnConfig map[s
 
 	value, exists := doc[fieldName]
 	if !exists || value == nil {
-		return element.NewStringColumn("")
+		return task.factory.GetColumnFactory().CreateStringColumn("")
 	}
 
 	switch fieldType {
 	case "ObjectId":
 		if oid, ok := value.(primitive.ObjectID); ok {
-			return element.NewStringColumn(oid.Hex())
+			return task.factory.GetColumnFactory().CreateStringColumn(oid.Hex())
 		}
-		return element.NewStringColumn(fmt.Sprintf("%v", value))
+		return task.factory.GetColumnFactory().CreateStringColumn(fmt.Sprintf("%v", value))
 
 	case "long":
 		switch v := value.(type) {
 		case int32:
-			return element.NewLongColumn(int64(v))
+			return task.factory.GetColumnFactory().CreateLongColumn(int64(v))
 		case int64:
-			return element.NewLongColumn(v)
+			return task.factory.GetColumnFactory().CreateLongColumn(v)
 		case float64:
-			return element.NewLongColumn(int64(v))
+			return task.factory.GetColumnFactory().CreateLongColumn(int64(v))
 		case string:
 			if intVal, err := strconv.ParseInt(v, 10, 64); err == nil {
-				return element.NewLongColumn(intVal)
+				return task.factory.GetColumnFactory().CreateLongColumn(intVal)
 			}
 		}
-		return element.NewLongColumn(0)
+		return task.factory.GetColumnFactory().CreateLongColumn(0)
 
 	case "double":
 		switch v := value.(type) {
 		case float32:
-			return element.NewDoubleColumn(float64(v))
+			return task.factory.GetColumnFactory().CreateDoubleColumn(float64(v))
 		case float64:
-			return element.NewDoubleColumn(v)
+			return task.factory.GetColumnFactory().CreateDoubleColumn(v)
 		case int32:
-			return element.NewDoubleColumn(float64(v))
+			return task.factory.GetColumnFactory().CreateDoubleColumn(float64(v))
 		case int64:
-			return element.NewDoubleColumn(float64(v))
+			return task.factory.GetColumnFactory().CreateDoubleColumn(float64(v))
 		case string:
 			if floatVal, err := strconv.ParseFloat(v, 64); err == nil {
-				return element.NewDoubleColumn(floatVal)
+				return task.factory.GetColumnFactory().CreateDoubleColumn(floatVal)
 			}
 		}
-		return element.NewDoubleColumn(0.0)
+		return task.factory.GetColumnFactory().CreateDoubleColumn(0.0)
 
 	case "boolean", "bool":
 		if boolVal, ok := value.(bool); ok {
-			return element.NewBoolColumn(boolVal)
+			return task.factory.GetColumnFactory().CreateBoolColumn(boolVal)
 		}
 		if strVal, ok := value.(string); ok {
 			if boolVal, err := strconv.ParseBool(strVal); err == nil {
-				return element.NewBoolColumn(boolVal)
+				return task.factory.GetColumnFactory().CreateBoolColumn(boolVal)
 			}
 		}
-		return element.NewBoolColumn(false)
+		return task.factory.GetColumnFactory().CreateBoolColumn(false)
 
 	case "date":
 		if dateVal, ok := value.(primitive.DateTime); ok {
-			return element.NewDateColumn(dateVal.Time())
+			return task.factory.GetColumnFactory().CreateDateColumn(dateVal.Time())
 		}
 		if timeVal, ok := value.(time.Time); ok {
-			return element.NewDateColumn(timeVal)
+			return task.factory.GetColumnFactory().CreateDateColumn(timeVal)
 		}
 		if strVal, ok := value.(string); ok {
 			if dateVal, err := time.Parse(time.RFC3339, strVal); err == nil {
-				return element.NewDateColumn(dateVal)
+				return task.factory.GetColumnFactory().CreateDateColumn(dateVal)
 			}
 		}
-		return element.NewDateColumn(time.Now())
+		return task.factory.GetColumnFactory().CreateDateColumn(time.Now())
 
 	case "bytes":
 		if bytesVal, ok := value.(primitive.Binary); ok {
-			return element.NewBytesColumn(bytesVal.Data)
+			return task.factory.GetColumnFactory().CreateBytesColumn(bytesVal.Data)
 		}
 		if strVal, ok := value.(string); ok {
-			return element.NewBytesColumn([]byte(strVal))
+			return task.factory.GetColumnFactory().CreateBytesColumn([]byte(strVal))
 		}
-		return element.NewBytesColumn([]byte{})
+		return task.factory.GetColumnFactory().CreateBytesColumn([]byte{})
 
 	case "array":
 		if arrayVal, ok := value.(primitive.A); ok {
@@ -349,12 +353,12 @@ func (task *MongoReaderTask) convertDocumentField(doc bson.M, columnConfig map[s
 			if splitter == "" {
 				splitter = ","
 			}
-			return element.NewStringColumn(strings.Join(strValues, splitter))
+			return task.factory.GetColumnFactory().CreateStringColumn(strings.Join(strValues, splitter))
 		}
-		return element.NewStringColumn("")
+		return task.factory.GetColumnFactory().CreateStringColumn("")
 
 	default: // string
-		return element.NewStringColumn(fmt.Sprintf("%v", value))
+		return task.factory.GetColumnFactory().CreateStringColumn(fmt.Sprintf("%v", value))
 	}
 }
 

@@ -9,13 +9,14 @@ import (
 	"github.com/longkeyy/go-datax/common/config"
 	"github.com/longkeyy/go-datax/common/element"
 	"github.com/longkeyy/go-datax/common/plugin"
+	"github.com/longkeyy/go-datax/common/factory"
 	"gorm.io/driver/mysql"
 	"gorm.io/gorm"
 )
 
 // DorisReaderJob Doris读取作业
 type DorisReaderJob struct {
-	config     *config.Configuration
+	config     config.Configuration
 	username   string
 	password   string
 	jdbcUrls   []string
@@ -30,7 +31,7 @@ func NewDorisReaderJob() *DorisReaderJob {
 	return &DorisReaderJob{}
 }
 
-func (job *DorisReaderJob) Init(config *config.Configuration) error {
+func (job *DorisReaderJob) Init(config config.Configuration) error {
 	job.config = config
 
 	// 获取必需参数
@@ -166,8 +167,8 @@ func (job *DorisReaderJob) getTableColumns(tableName string) ([]string, error) {
 	return job.columns, nil
 }
 
-func (job *DorisReaderJob) Split(adviceNumber int) ([]*config.Configuration, error) {
-	taskConfigs := make([]*config.Configuration, 0)
+func (job *DorisReaderJob) Split(adviceNumber int) ([]config.Configuration, error) {
+	taskConfigs := make([]config.Configuration, 0)
 
 	// 如果有splitPk，按splitPk进行数据分片
 	if job.splitPk != "" && adviceNumber > 1 {
@@ -192,7 +193,7 @@ func (job *DorisReaderJob) Split(adviceNumber int) ([]*config.Configuration, err
 	return taskConfigs, nil
 }
 
-func (job *DorisReaderJob) splitByPk(tableName string, adviceNumber int) ([]*config.Configuration, error) {
+func (job *DorisReaderJob) splitByPk(tableName string, adviceNumber int) ([]config.Configuration, error) {
 	// 连接数据库获取splitPk的范围
 	dsn := job.convertJdbcUrl(job.jdbcUrls[0])
 	db, err := gorm.Open(mysql.Open(dsn), &gorm.Config{})
@@ -224,7 +225,7 @@ func (job *DorisReaderJob) splitByPk(tableName string, adviceNumber int) ([]*con
 	}
 
 	// 计算分片范围
-	taskConfigs := make([]*config.Configuration, 0)
+	taskConfigs := make([]config.Configuration, 0)
 	if minMax.MaxVal <= minMax.MinVal {
 		// 只有一个分片
 		taskConfig := job.config.Clone()
@@ -276,16 +277,19 @@ func (job *DorisReaderJob) Destroy() error {
 
 // DorisReaderTask Doris读取任务
 type DorisReaderTask struct {
-	config    *config.Configuration
+	config    config.Configuration
 	readerJob *DorisReaderJob
 	db        *gorm.DB
+	factory   *factory.DataXFactory
 }
 
 func NewDorisReaderTask() *DorisReaderTask {
-	return &DorisReaderTask{}
+	return &DorisReaderTask{
+		factory: factory.GetGlobalFactory(),
+	}
 }
 
-func (task *DorisReaderTask) Init(config *config.Configuration) error {
+func (task *DorisReaderTask) Init(config config.Configuration) error {
 	task.config = config
 
 	// 创建ReaderJob来重用配置逻辑
@@ -361,7 +365,7 @@ func (task *DorisReaderTask) StartRead(recordSender plugin.RecordSender) error {
 		}
 
 		// 转换为DataX记录
-		record := element.NewRecord()
+		record := task.factory.GetRecordFactory().CreateRecord()
 		for i, value := range values {
 			column := task.convertValue(value, columnTypes[i].DatabaseTypeName())
 			record.AddColumn(column)
@@ -414,33 +418,33 @@ func (task *DorisReaderTask) buildQuery(tableName string, columns []string) stri
 
 func (task *DorisReaderTask) convertValue(value interface{}, typeName string) element.Column {
 	if value == nil {
-		return element.NewStringColumn("")
+		return task.factory.GetColumnFactory().CreateStringColumn("")
 	}
 
 	switch typeName {
 	case "BIGINT", "INT", "TINYINT", "SMALLINT", "LARGINT":
 		if intVal, err := strconv.ParseInt(fmt.Sprintf("%v", value), 10, 64); err == nil {
-			return element.NewLongColumn(intVal)
+			return task.factory.GetColumnFactory().CreateLongColumn(intVal)
 		}
-		return element.NewLongColumn(0)
+		return task.factory.GetColumnFactory().CreateLongColumn(0)
 
 	case "FLOAT", "DOUBLE", "DECIMAL":
 		if floatVal, err := strconv.ParseFloat(fmt.Sprintf("%v", value), 64); err == nil {
-			return element.NewDoubleColumn(floatVal)
+			return task.factory.GetColumnFactory().CreateDoubleColumn(floatVal)
 		}
-		return element.NewDoubleColumn(0.0)
+		return task.factory.GetColumnFactory().CreateDoubleColumn(0.0)
 
 	case "BOOLEAN":
 		if boolVal, err := strconv.ParseBool(fmt.Sprintf("%v", value)); err == nil {
-			return element.NewBoolColumn(boolVal)
+			return task.factory.GetColumnFactory().CreateBoolColumn(boolVal)
 		}
-		return element.NewBoolColumn(false)
+		return task.factory.GetColumnFactory().CreateBoolColumn(false)
 
 	case "DATE", "DATETIME", "TIMESTAMP":
-		return element.NewStringColumn(fmt.Sprintf("%v", value))
+		return task.factory.GetColumnFactory().CreateStringColumn(fmt.Sprintf("%v", value))
 
 	default: // VARCHAR, CHAR, TEXT, STRING, MAP, JSON, ARRAY, STRUCT
-		return element.NewStringColumn(fmt.Sprintf("%v", value))
+		return task.factory.GetColumnFactory().CreateStringColumn(fmt.Sprintf("%v", value))
 	}
 }
 

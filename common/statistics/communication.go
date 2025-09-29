@@ -1,359 +1,147 @@
 package statistics
 
 import (
-	"encoding/json"
-	"sync"
 	"time"
+
+	"github.com/longkeyy/go-datax/common/config"
 )
 
-// State 表示任务运行状态
-type State int
-
-const (
-	StateRunning State = iota
-	StateSucceeded
-	StateFailed
-	StateKilled
-	StateKilling
-)
-
-// IsRunning 检查状态是否为运行中
-func (s State) IsRunning() bool {
-	return s == StateRunning
+// StatisticsCollectorImpl 实现新API的统计收集器
+type StatisticsCollectorImpl struct {
+	communication *Communication
+	startTime     time.Time
+	endTime       time.Time
 }
 
-// IsFinished 检查状态是否已完成
-func (s State) IsFinished() bool {
-	return s == StateSucceeded || s == StateFailed || s == StateKilled
-}
-
-func (s State) String() string {
-	switch s {
-	case StateRunning:
-		return "RUNNING"
-	case StateSucceeded:
-		return "SUCCEEDED"
-	case StateFailed:
-		return "FAILED"
-	case StateKilled:
-		return "KILLED"
-	case StateKilling:
-		return "KILLING"
-	default:
-		return "UNKNOWN"
+// NewStatisticsCollector 创建新的统计收集器
+func NewStatisticsCollector() StatisticsCollector {
+	return &StatisticsCollectorImpl{
+		communication: NewCommunication(),
+		startTime:     time.Now(),
 	}
 }
 
-// Communication DataX所有的状态及统计信息交互类，job、taskGroup、task等的消息汇报都走该类
-type Communication struct {
-	mu sync.RWMutex
-
-	// 所有的数值key-value对
-	counter map[string]int64
-
-	// 运行状态
-	state State
-
-	// 异常记录
-	throwable error
-
-	// 记录的timestamp
-	timestamp int64
-
-	// task给job的信息
-	message map[string][]string
+func (s *StatisticsCollectorImpl) RecordSentRecord(byteSize int) {
+	s.communication.IncreaseCounter(READ_SUCCEED_RECORDS, 1)
+	s.communication.IncreaseCounter(READ_SUCCEED_BYTES, int64(byteSize))
 }
 
-// NewCommunication 创建新的Communication实例
-func NewCommunication() *Communication {
-	return &Communication{
-		counter:   make(map[string]int64),
-		state:     StateRunning,
-		timestamp: time.Now().UnixMilli(),
-		message:   make(map[string][]string),
+func (s *StatisticsCollectorImpl) RecordFailedRecord(byteSize int, err error) {
+	s.communication.IncreaseCounter(READ_FAILED_RECORDS, 1)
+	s.communication.IncreaseCounter(READ_FAILED_BYTES, int64(byteSize))
+	if err != nil {
+		s.communication.SetThrowable(err)
+		s.communication.SetState(StateFailed)
 	}
 }
 
-// Reset 重置Communication
-func (c *Communication) Reset() {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.init()
+func (s *StatisticsCollectorImpl) RecordFilteredRecord(byteSize int) {
+	s.communication.IncreaseCounter(TRANSFORMER_FILTER_RECORDS, 1)
+	s.communication.IncreaseCounter("transformerFilterBytes", int64(byteSize))
 }
 
-func (c *Communication) init() {
-	c.counter = make(map[string]int64)
-	c.state = StateRunning
-	c.throwable = nil
-	c.message = make(map[string][]string)
-	c.timestamp = time.Now().UnixMilli()
+func (s *StatisticsCollectorImpl) GetTotalRecords() int64 {
+	return s.GetSentRecords() + s.GetFailedRecords() + s.GetFilteredRecords()
 }
 
-// GetCounter 获取所有计数器
-func (c *Communication) GetCounter() map[string]int64 {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
+func (s *StatisticsCollectorImpl) GetSentRecords() int64 {
+	return s.communication.GetLongCounter(READ_SUCCEED_RECORDS)
+}
 
-	result := make(map[string]int64)
-	for k, v := range c.counter {
-		result[k] = v
+func (s *StatisticsCollectorImpl) GetFailedRecords() int64 {
+	return s.communication.GetLongCounter(READ_FAILED_RECORDS)
+}
+
+func (s *StatisticsCollectorImpl) GetFilteredRecords() int64 {
+	return s.communication.GetLongCounter(TRANSFORMER_FILTER_RECORDS)
+}
+
+func (s *StatisticsCollectorImpl) GetTotalBytes() int64 {
+	return s.communication.GetLongCounter(READ_SUCCEED_BYTES) +
+		s.communication.GetLongCounter(READ_FAILED_BYTES) +
+		s.communication.GetLongCounter("transformerFilterBytes")
+}
+
+func (s *StatisticsCollectorImpl) GetSpeed() float64 {
+	elapsed := s.GetElapsedTime()
+	if elapsed.Seconds() <= 0 {
+		return 0
 	}
-	return result
+	return float64(s.GetTotalRecords()) / elapsed.Seconds()
 }
 
-// GetState 获取状态
-func (c *Communication) GetState() State {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	return c.state
+func (s *StatisticsCollectorImpl) GetStartTime() time.Time {
+	return s.startTime
 }
 
-// SetState 设置状态
-func (c *Communication) SetState(state State) {
-	c.SetStateForce(state, false)
-}
-
-// SetStateForce 强制设置状态
-func (c *Communication) SetStateForce(state State, force bool) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	if !force && c.state == StateFailed {
-		return
+func (s *StatisticsCollectorImpl) GetEndTime() time.Time {
+	if s.endTime.IsZero() {
+		return time.Now()
 	}
-	c.state = state
+	return s.endTime
 }
 
-// GetThrowable 获取异常
-func (c *Communication) GetThrowable() error {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	return c.throwable
+func (s *StatisticsCollectorImpl) GetElapsedTime() time.Duration {
+	end := s.GetEndTime()
+	return end.Sub(s.startTime)
 }
 
-// GetThrowableMessage 获取异常消息
-func (c *Communication) GetThrowableMessage() string {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	if c.throwable == nil {
-		return ""
-	}
-	return c.throwable.Error()
+func (s *StatisticsCollectorImpl) Reset() {
+	s.communication.Reset()
+	s.startTime = time.Now()
+	s.endTime = time.Time{}
 }
 
-// SetThrowable 设置异常
-func (c *Communication) SetThrowable(throwable error) {
-	c.SetThrowableForce(throwable, false)
+// MessageCommunicatorImpl 实现新API的消息通信器
+type MessageCommunicatorImpl struct {
+	collectors map[string]StatisticsCollector
+	configuration config.Configuration
 }
 
-// SetThrowableForce 强制设置异常
-func (c *Communication) SetThrowableForce(throwable error, force bool) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	if force {
-		c.throwable = throwable
-	} else {
-		if c.throwable == nil {
-			c.throwable = throwable
-		}
+// NewMessageCommunicator 创建新的消息通信器
+func NewMessageCommunicator(config config.Configuration) MessageCommunicator {
+	return &MessageCommunicatorImpl{
+		collectors:    make(map[string]StatisticsCollector),
+		configuration: config,
 	}
 }
 
-// GetTimestamp 获取时间戳
-func (c *Communication) GetTimestamp() int64 {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	return c.timestamp
+func (c *MessageCommunicatorImpl) RegisterStatisticsCollector(name string, collector StatisticsCollector) {
+	c.collectors[name] = collector
 }
 
-// SetTimestamp 设置时间戳
-func (c *Communication) SetTimestamp(timestamp int64) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.timestamp = timestamp
+func (c *MessageCommunicatorImpl) GetStatisticsCollector(name string) StatisticsCollector {
+	return c.collectors[name]
 }
 
-// GetMessage 获取所有消息
-func (c *Communication) GetMessage() map[string][]string {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-
-	result := make(map[string][]string)
-	for k, v := range c.message {
-		result[k] = make([]string, len(v))
-		copy(result[k], v)
-	}
-	return result
-}
-
-// GetMessageByKey 根据key获取消息
-func (c *Communication) GetMessageByKey(key string) []string {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-
-	if msgs, exists := c.message[key]; exists {
-		result := make([]string, len(msgs))
-		copy(result, msgs)
-		return result
-	}
+func (c *MessageCommunicatorImpl) SendMessage(message interface{}) error {
+	// 实现消息发送逻辑
 	return nil
 }
 
-// AddMessage 添加消息
-func (c *Communication) AddMessage(key, value string) {
-	if key == "" {
-		return
-	}
-
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	if c.message[key] == nil {
-		c.message[key] = make([]string, 0)
-	}
-	c.message[key] = append(c.message[key], value)
+func (c *MessageCommunicatorImpl) ReceiveMessage() (interface{}, error) {
+	// 实现消息接收逻辑
+	return nil, nil
 }
 
-// GetLongCounter 获取长整型计数器值
-func (c *Communication) GetLongCounter(key string) int64 {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-
-	if value, exists := c.counter[key]; exists {
-		return value
-	}
-	return 0
+// StatisticsReporterImpl 实现新API的统计报告器
+type StatisticsReporterImpl struct {
+	config config.Configuration
 }
 
-// SetLongCounter 设置长整型计数器值
-func (c *Communication) SetLongCounter(key string, value int64) {
-	if key == "" {
-		return
-	}
-
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.counter[key] = value
+// NewStatisticsReporter 创建新的统计报告器
+func NewStatisticsReporter(config config.Configuration) StatisticsReporter {
+	return &StatisticsReporterImpl{config: config}
 }
 
-// IncreaseCounter 增加计数器值
-func (c *Communication) IncreaseCounter(key string, deltaValue int64) {
-	if key == "" {
-		return
-	}
-
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	if value, exists := c.counter[key]; exists {
-		c.counter[key] = value + deltaValue
-	} else {
-		c.counter[key] = deltaValue
-	}
+func (r *StatisticsReporterImpl) ReportProgress(collector StatisticsCollector) {
+	// 实现进度报告逻辑
 }
 
-// Clone 克隆Communication
-func (c *Communication) Clone() *Communication {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-
-	newComm := NewCommunication()
-
-	// 克隆counter
-	for k, v := range c.counter {
-		newComm.counter[k] = v
-	}
-
-	// 克隆状态和异常
-	newComm.state = c.state
-	newComm.throwable = c.throwable
-	newComm.timestamp = c.timestamp
-
-	// 克隆消息
-	for k, v := range c.message {
-		newComm.message[k] = make([]string, len(v))
-		copy(newComm.message[k], v)
-	}
-
-	return newComm
+func (r *StatisticsReporterImpl) ReportFinal(collector StatisticsCollector) {
+	// 实现最终报告逻辑
 }
 
-// MergeFrom 合并另一个Communication的信息
-func (c *Communication) MergeFrom(other *Communication) *Communication {
-	if other == nil {
-		return c
-	}
-
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	other.mu.RLock()
-	defer other.mu.RUnlock()
-
-	// 合并counter，将other的值累加到this中
-	for key, value := range other.counter {
-		if existingValue, exists := c.counter[key]; exists {
-			c.counter[key] = existingValue + value
-		} else {
-			c.counter[key] = value
-		}
-	}
-
-	// 合并状态 - 优先级： (Failed | Killed) > Running > Success
-	c.mergeStateFrom(other.state)
-
-	// 合并throwable，当this的throwable为空时，才将other的throwable合并进来
-	if c.throwable == nil {
-		c.throwable = other.throwable
-	}
-
-	// 合并消息
-	for key, values := range other.message {
-		if c.message[key] == nil {
-			c.message[key] = make([]string, 0)
-		}
-		c.message[key] = append(c.message[key], values...)
-	}
-
-	return c
-}
-
-// mergeStateFrom 合并状态
-func (c *Communication) mergeStateFrom(otherState State) State {
-	if c.state == StateFailed || otherState == StateFailed ||
-		c.state == StateKilled || otherState == StateKilled {
-		c.state = StateFailed
-	} else if c.state.IsRunning() || otherState.IsRunning() {
-		c.state = StateRunning
-	}
-	return c.state
-}
-
-// IsFinished 检查是否已完成
-func (c *Communication) IsFinished() bool {
-	return c.GetState().IsFinished()
-}
-
-// ToJSON 转换为JSON字符串
-func (c *Communication) ToJSON() (string, error) {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-
-	data := map[string]interface{}{
-		"counter":   c.counter,
-		"state":     c.state.String(),
-		"timestamp": c.timestamp,
-		"message":   c.message,
-	}
-
-	if c.throwable != nil {
-		data["throwable"] = c.throwable.Error()
-	}
-
-	bytes, err := json.Marshal(data)
-	if err != nil {
-		return "", err
-	}
-	return string(bytes), nil
+func (r *StatisticsReporterImpl) ReportError(collector StatisticsCollector, err error) {
+	// 实现错误报告逻辑
 }

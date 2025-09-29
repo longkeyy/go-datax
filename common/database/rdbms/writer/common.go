@@ -9,6 +9,7 @@ import (
 	"github.com/longkeyy/go-datax/common/element"
 	"github.com/longkeyy/go-datax/common/logger"
 	"github.com/longkeyy/go-datax/common/plugin"
+	coreplugin "github.com/longkeyy/go-datax/core/registry"
 	"go.uber.org/zap"
 	"gorm.io/gorm"
 )
@@ -17,24 +18,26 @@ const (
 	DefaultBatchSize = 1024
 )
 
-// CommonRdbmsWriterJob 通用RDBMS Writer Job，对应Java版本的CommonRdbmsWriter.Job
+// CommonRdbmsWriterJob provides unified database write operations across
+// different RDBMS types (PostgreSQL, MySQL, SQLite) with configuration preprocessing.
 type CommonRdbmsWriterJob struct {
 	dataBaseType DatabaseType
-	config       *config.Configuration
+	config       config.Configuration
 }
 
-// NewCommonRdbmsWriterJob 创建通用RDBMS Writer Job实例
+// NewCommonRdbmsWriterJob creates a new database writer job for the specified database type.
 func NewCommonRdbmsWriterJob(dbType DatabaseType) *CommonRdbmsWriterJob {
 	return &CommonRdbmsWriterJob{
 		dataBaseType: dbType,
 	}
 }
 
-// Init 初始化Job，对应Java版本的init方法
-func (job *CommonRdbmsWriterJob) Init(originalConfig *config.Configuration) error {
+// Init performs configuration validation and preprocessing.
+// This is where table metadata is resolved and wildcard columns are expanded.
+func (job *CommonRdbmsWriterJob) Init(originalConfig config.Configuration) error {
 	job.config = originalConfig
 
-	// 执行配置预处理，这是关键步骤
+	// Critical step: resolve table schemas and expand wildcard columns
 	if err := DoPretreatment(originalConfig, job.dataBaseType); err != nil {
 		return fmt.Errorf("pretreatment failed: %v", err)
 	}
@@ -44,15 +47,13 @@ func (job *CommonRdbmsWriterJob) Init(originalConfig *config.Configuration) erro
 	return nil
 }
 
-// Prepare 准备阶段，执行preSql等
+// Prepare executes pre-processing SQL statements for table setup or data preparation.
 func (job *CommonRdbmsWriterJob) Prepare() error {
-	// 获取preSql配置
 	preSqls := job.config.GetStringList("parameter.preSql")
 	if len(preSqls) == 0 {
 		return nil
 	}
 
-	// 执行preSql
 	db, err := job.createConnection()
 	if err != nil {
 		return fmt.Errorf("failed to connect for prepare: %v", err)
@@ -74,14 +75,15 @@ func (job *CommonRdbmsWriterJob) Prepare() error {
 	return nil
 }
 
-// Split 拆分任务配置
-func (job *CommonRdbmsWriterJob) Split(mandatoryNumber int) ([]*config.Configuration, error) {
-	taskConfigs := make([]*config.Configuration, mandatoryNumber)
+// Split creates task configurations for parallel execution.
+// Marks configurations as preprocessed to avoid redundant schema resolution.
+func (job *CommonRdbmsWriterJob) Split(mandatoryNumber int) ([]config.Configuration, error) {
+	taskConfigs := make([]config.Configuration, mandatoryNumber)
 
 	for i := 0; i < mandatoryNumber; i++ {
 		taskConfig := job.config.Clone()
 		taskConfig.Set("taskId", i)
-		// 关键修复：标记此配置已经过预处理，避免重复处理
+		// Optimization: prevent redundant preprocessing in task instances
 		taskConfig.Set("_rdbmsPreprocessed", true)
 		taskConfigs[i] = taskConfig
 	}
@@ -92,15 +94,13 @@ func (job *CommonRdbmsWriterJob) Split(mandatoryNumber int) ([]*config.Configura
 	return taskConfigs, nil
 }
 
-// Post 后处理阶段，执行postSql等
+// Post executes post-processing SQL statements for cleanup or finalization.
 func (job *CommonRdbmsWriterJob) Post() error {
-	// 获取postSql配置
 	postSqls := job.config.GetStringList("parameter.postSql")
 	if len(postSqls) == 0 {
 		return nil
 	}
 
-	// 执行postSql
 	db, err := job.createConnection()
 	if err != nil {
 		return fmt.Errorf("failed to connect for post: %v", err)
@@ -122,12 +122,12 @@ func (job *CommonRdbmsWriterJob) Post() error {
 	return nil
 }
 
-// Destroy 销毁资源
+// Destroy performs cleanup operations for the job.
 func (job *CommonRdbmsWriterJob) Destroy() error {
 	return nil
 }
 
-// createConnection 创建数据库连接
+// createConnection establishes database connection using configuration parameters.
 func (job *CommonRdbmsWriterJob) createConnection() (*gorm.DB, error) {
 	username := job.config.GetString("parameter.username")
 	password := job.config.GetString("parameter.password")
@@ -143,10 +143,11 @@ func (job *CommonRdbmsWriterJob) createConnection() (*gorm.DB, error) {
 	return createConnectionFromJDBC(job.dataBaseType, jdbcUrl, username, password)
 }
 
-// CommonRdbmsWriterTask 通用RDBMS Writer Task，对应Java版本的CommonRdbmsWriter.Task
+// CommonRdbmsWriterTask handles the actual data writing operations
+// with batching, type conversion, and database-specific optimizations.
 type CommonRdbmsWriterTask struct {
 	dataBaseType DatabaseType
-	config       *config.Configuration
+	config       config.Configuration
 	writerJob    *CommonRdbmsWriterJob
 	db           *gorm.DB
 	batchSize    int
@@ -155,26 +156,26 @@ type CommonRdbmsWriterTask struct {
 	columnNumber int
 }
 
-// NewCommonRdbmsWriterTask 创建通用RDBMS Writer Task实例
+// NewCommonRdbmsWriterTask creates a new task instance for data writing operations.
 func NewCommonRdbmsWriterTask(dbType DatabaseType) *CommonRdbmsWriterTask {
 	return &CommonRdbmsWriterTask{
 		dataBaseType: dbType,
 	}
 }
 
-// Init 初始化Task
-func (task *CommonRdbmsWriterTask) Init(config *config.Configuration) error {
+// Init prepares the task with database connection and validates configuration.
+func (task *CommonRdbmsWriterTask) Init(config config.Configuration) error {
 	task.config = config
 	task.batchSize = config.GetIntWithDefault("parameter.batchSize", DefaultBatchSize)
 
-	// 检查是否已经预处理过，避免重复预处理
+	// Skip preprocessing if already done by job to improve performance
 	if config.Get("_rdbmsPreprocessed") != nil {
 		logger.Component().WithComponent("CommonRdbmsWriterTask").Debug("Configuration already preprocessed, skipping pretreatment")
-		// 直接初始化数据库连接等，跳过预处理
+		// Fast path: reuse preprocessed configuration
 		task.writerJob = NewCommonRdbmsWriterJob(task.dataBaseType)
 		task.writerJob.config = config
 	} else {
-		// 创建WriterJob来重用连接逻辑
+		// Fallback path: perform full initialization with preprocessing
 		task.writerJob = NewCommonRdbmsWriterJob(task.dataBaseType)
 		if err := task.writerJob.Init(config); err != nil {
 			return err
@@ -268,7 +269,7 @@ func (task *CommonRdbmsWriterTask) StartWriteWithContext(recordReceiver plugin.R
 
 		record, err := recordReceiver.GetFromReader()
 		if err != nil {
-			if err == plugin.ErrChannelClosed {
+			if err == coreplugin.ErrChannelClosed {
 				taskLogger.Info("Received channel closed signal", zap.Int("recordsReceived", receiveCount))
 				// 处理最后一批数据
 				if len(batch) > 0 {
@@ -365,11 +366,12 @@ func (task *CommonRdbmsWriterTask) writeBatch(records []element.Record) error {
 	return nil
 }
 
-// buildBatchInsertSQL 构建批量插入SQL
+// buildBatchInsertSQL generates database-specific bulk insert statements
+// with proper placeholder formatting and conflict resolution.
 func (task *CommonRdbmsWriterTask) buildBatchInsertSQL(records []element.Record) (string, []interface{}, error) {
 	columnStr := strings.Join(task.columns, ", ")
 
-	// 构建VALUES部分
+	// Build parameterized VALUES clause for batch insert
 	valuePlaceholders := make([]string, len(records))
 	allValues := make([]interface{}, 0, len(records)*len(task.columns))
 	placeholderIndex := 1
@@ -381,10 +383,10 @@ func (task *CommonRdbmsWriterTask) buildBatchInsertSQL(records []element.Record)
 				columnCount, task.columnNumber)
 		}
 
-		// 为每个记录构建占位符
+		// Generate database-specific placeholders for each record
 		recordPlaceholders := make([]string, columnCount)
 		for j := 0; j < columnCount; j++ {
-			// 根据数据库类型使用不同的占位符格式
+			// Database-specific placeholder syntax ($ for PostgreSQL, ? for others)
 			switch task.dataBaseType {
 			case PostgreSQL:
 				recordPlaceholders[j] = fmt.Sprintf("$%d", placeholderIndex)
@@ -395,7 +397,6 @@ func (task *CommonRdbmsWriterTask) buildBatchInsertSQL(records []element.Record)
 			}
 			placeholderIndex++
 
-			// 获取列值
 			column := record.GetColumn(j)
 			value := task.convertColumnToValue(column)
 			allValues = append(allValues, value)
@@ -404,7 +405,7 @@ func (task *CommonRdbmsWriterTask) buildBatchInsertSQL(records []element.Record)
 		valuePlaceholders[i] = fmt.Sprintf("(%s)", strings.Join(recordPlaceholders, ", "))
 	}
 
-	// 根据数据库类型构建不同的INSERT语句
+	// Generate database-specific INSERT with conflict resolution
 	var insertSQL string
 	switch task.dataBaseType {
 	case PostgreSQL:
@@ -421,7 +422,7 @@ func (task *CommonRdbmsWriterTask) buildBatchInsertSQL(records []element.Record)
 	return insertSQL, allValues, nil
 }
 
-// convertColumnToValue 转换列值为数据库值
+// convertColumnToValue transforms DataX column types to database-compatible values.
 func (task *CommonRdbmsWriterTask) convertColumnToValue(column element.Column) interface{} {
 	if column.IsNull() {
 		return nil
@@ -452,16 +453,16 @@ func (task *CommonRdbmsWriterTask) convertColumnToValue(column element.Column) i
 		}
 	}
 
-	// 默认转换为字符串
+	// Fallback to string representation for unknown types
 	return column.GetAsString()
 }
 
-// Post 后处理
+// Post performs task-level cleanup operations.
 func (task *CommonRdbmsWriterTask) Post() error {
 	return nil
 }
 
-// Destroy 销毁资源
+// Destroy closes database connections and releases resources.
 func (task *CommonRdbmsWriterTask) Destroy() error {
 	if task.db != nil {
 		if sqlDB, err := task.db.DB(); err == nil {

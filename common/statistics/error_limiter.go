@@ -21,7 +21,7 @@ type ErrorLimiter struct {
 }
 
 // NewErrorLimiter 创建错误控制器
-func NewErrorLimiter(configuration *config.Configuration) *ErrorLimiter {
+func NewErrorLimiter(configuration config.Configuration) *ErrorLimiter {
 	errorLimit := configuration.GetConfiguration("job.setting.errorLimit")
 
 	maxErrorRecord := errorLimit.GetIntWithDefault("record", 0)

@@ -33,10 +33,10 @@ type AbstractCommunicator struct {
 	mu            sync.RWMutex
 	communications map[int]*Communication
 	jobId         int64
-	configuration *config.Configuration
+	configuration config.Configuration
 }
 
-func NewAbstractCommunicator(configuration *config.Configuration) *AbstractCommunicator {
+func NewAbstractCommunicator(configuration config.Configuration) *AbstractCommunicator {
 	jobId := configuration.GetLongWithDefault("core.container.job.id", 0)
 	return &AbstractCommunicator{
 		communications: make(map[int]*Communication),
@@ -88,26 +88,26 @@ func (ac *AbstractCommunicator) GetJobId() int64 {
 }
 
 // GetConfiguration 获取配置
-func (ac *AbstractCommunicator) GetConfiguration() *config.Configuration {
+func (ac *AbstractCommunicator) GetConfiguration() config.Configuration {
 	return ac.configuration
 }
 
-// JobContainerCommunicator Job级别的通信器
-type JobContainerCommunicator struct {
+// JobCommunicator Job级别的通信器
+type JobCommunicator struct {
 	*AbstractCommunicator
 	reporter *JobReporter
 }
 
-func NewJobContainerCommunicator(configuration *config.Configuration) *JobContainerCommunicator {
+func NewJobCommunicator(configuration config.Configuration) *JobCommunicator {
 	abstract := NewAbstractCommunicator(configuration)
-	return &JobContainerCommunicator{
+	return &JobCommunicator{
 		AbstractCommunicator: abstract,
 		reporter:            NewJobReporter(abstract.jobId),
 	}
 }
 
 // Report 汇报Job级别的Communication信息
-func (jcc *JobContainerCommunicator) Report(communication *Communication) {
+func (jcc *JobCommunicator) Report(communication *Communication) {
 	// 汇报给Reporter
 	jcc.reporter.ReportJobCommunication(jcc.jobId, communication)
 
@@ -119,27 +119,27 @@ func (jcc *JobContainerCommunicator) Report(communication *Communication) {
 	jcc.reportVMInfo()
 }
 
-func (jcc *JobContainerCommunicator) reportVMInfo() {
+func (jcc *JobCommunicator) reportVMInfo() {
 	// 这里可以添加VM信息汇报逻辑，类似Java版本的VMInfo
 	// 目前先简单实现
 }
 
-// TaskGroupCommunicator TaskGroup级别的通信器
-type TaskGroupCommunicator struct {
+// TaskCommunicator TaskGroup级别的通信器
+type TaskCommunicator struct {
 	*AbstractCommunicator
 	taskGroupId int
 }
 
-func NewTaskGroupCommunicator(configuration *config.Configuration, taskGroupId int) *TaskGroupCommunicator {
+func NewTaskCommunicator(configuration config.Configuration, taskGroupId int) *TaskCommunicator {
 	abstract := NewAbstractCommunicator(configuration)
-	return &TaskGroupCommunicator{
+	return &TaskCommunicator{
 		AbstractCommunicator: abstract,
 		taskGroupId:         taskGroupId,
 	}
 }
 
 // Report 汇报TaskGroup级别的Communication信息
-func (tgc *TaskGroupCommunicator) Report(communication *Communication) {
+func (tgc *TaskCommunicator) Report(communication *Communication) {
 	taskLogger := logger.TaskGroupLogger(tgc.taskGroupId)
 
 	// 输出简化的进度信息

@@ -3,7 +3,7 @@ package main
 import (
 	"github.com/longkeyy/go-datax/core/engine"
 
-	// 导入插件以触发注册
+	// Import plugins to trigger automatic registration via init() functions
 	_ "github.com/longkeyy/go-datax/plugins/reader/clickhousereader"
 	_ "github.com/longkeyy/go-datax/plugins/reader/dorisreader"
 	_ "github.com/longkeyy/go-datax/plugins/reader/jsonfilereader"
@@ -31,5 +31,6 @@ import (
 var Version = "v1.0.0"
 
 func main() {
+	// Plugins automatically register themselves via init() functions during import
 	engine.Main(Version)
 }
