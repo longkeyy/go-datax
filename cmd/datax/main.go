@@ -47,7 +47,7 @@ import (
 	_ "github.com/longkeyy/go-datax/plugins/writer/txtfilewriter"
 )
 
-var Version = "v1.0.0"
+var Version = "v1.4.0"
 
 func main() {
 	// Plugins automatically register themselves via init() functions during import
