@@ -94,7 +94,6 @@ func Main(ver string) {
 	flag.Parse()
 
 	if jobPath == "" {
-		appLogger.Error("Job configuration file path is required")
 		fmt.Println("Usage: datax -job <config-file>")
 		os.Exit(1)
 	}
