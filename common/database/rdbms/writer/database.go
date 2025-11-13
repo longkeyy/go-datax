@@ -175,3 +175,76 @@ func queryMySQLTableColumns(db *gorm.DB, table string) ([]string, error) {
 
 	return columns, nil
 }
+
+// queryPrimaryKeyColumns queries the primary key columns of a table
+// Returns: array of primary key column names (may be empty if no primary key exists)
+// Supports composite primary keys (multiple columns)
+func queryPrimaryKeyColumns(db *gorm.DB, dbType DatabaseType, table string) ([]string, error) {
+	switch dbType {
+	case PostgreSQL:
+		return queryPostgreSQLPrimaryKeys(db, table)
+	case MySQL:
+		return queryMySQLPrimaryKeys(db, table)
+	default:
+		return nil, fmt.Errorf("database type %s not supported for primary key query", dbType.String())
+	}
+}
+
+// queryPostgreSQLPrimaryKeys queries primary key columns for PostgreSQL table
+func queryPostgreSQLPrimaryKeys(db *gorm.DB, table string) ([]string, error) {
+	query := `
+		SELECT a.attname
+		FROM pg_index i
+		JOIN pg_attribute a ON a.attrelid = i.indrelid
+			AND a.attnum = ANY(i.indkey)
+		WHERE i.indrelid = $1::regclass
+		  AND i.indisprimary
+		ORDER BY array_position(i.indkey, a.attnum)`
+
+	rows, err := db.Raw(query, table).Rows()
+	if err != nil {
+		return nil, fmt.Errorf("failed to query PostgreSQL primary keys: %v", err)
+	}
+	defer rows.Close()
+
+	var primaryKeys []string
+	for rows.Next() {
+		var columnName string
+		if err := rows.Scan(&columnName); err != nil {
+			return nil, fmt.Errorf("failed to scan primary key column: %v", err)
+		}
+		primaryKeys = append(primaryKeys, columnName)
+	}
+
+	// Empty array is valid (table has no primary key)
+	return primaryKeys, nil
+}
+
+// queryMySQLPrimaryKeys queries primary key columns for MySQL table
+func queryMySQLPrimaryKeys(db *gorm.DB, table string) ([]string, error) {
+	query := `
+		SELECT column_name
+		FROM information_schema.columns
+		WHERE table_schema = DATABASE()
+		  AND table_name = ?
+		  AND column_key = 'PRI'
+		ORDER BY ordinal_position`
+
+	rows, err := db.Raw(query, table).Rows()
+	if err != nil {
+		return nil, fmt.Errorf("failed to query MySQL primary keys: %v", err)
+	}
+	defer rows.Close()
+
+	var primaryKeys []string
+	for rows.Next() {
+		var columnName string
+		if err := rows.Scan(&columnName); err != nil {
+			return nil, fmt.Errorf("failed to scan primary key column: %v", err)
+		}
+		primaryKeys = append(primaryKeys, columnName)
+	}
+
+	// Empty array is valid (table has no primary key)
+	return primaryKeys, nil
+}

@@ -1,3 +1,5 @@
+[English](README_EN.md) | 简体中文
+
 # go-datax
 
 Go版本的DataX数据同步工具，100%兼容DataX JSON配置格式。

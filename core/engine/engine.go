@@ -1,74 +1,34 @@
 package engine
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"os"
 
 	"github.com/longkeyy/go-datax/common/config"
-	"github.com/longkeyy/go-datax/common/logger"
 	coreconfig "github.com/longkeyy/go-datax/common/config"
+	"github.com/longkeyy/go-datax/common/logger"
 	"github.com/longkeyy/go-datax/core/job"
 	"go.uber.org/zap"
 )
 
-// Engine provides the main entry point for DataX execution,
-// orchestrating job containers and managing execution flow.
-type Engine struct {
-	configuration config.Configuration
-}
+// Engine is now stateless - just a namespace for execution functions
+type Engine struct{}
 
 func NewEngine() *Engine {
 	return &Engine{}
 }
 
+// Start executes a job synchronously (blocking) - for backward compatibility
 func (e *Engine) Start(allConf config.Configuration) error {
 	if allConf == nil {
 		return fmt.Errorf("configuration cannot be nil")
 	}
 
-	e.configuration = allConf
-
-	// Currently only job mode is supported (taskgroup mode planned for future)
-	isJob := allConf.GetStringWithDefault("core.container.model", "job") == "job"
-
-	if isJob {
-		jobContainer := job.NewJobContainer(allConf)
-		return jobContainer.Start()
-	} else {
-		// TaskGroup mode deferred for future implementation
-		return fmt.Errorf("taskGroup mode not implemented yet")
-	}
-}
-
-func (e *Engine) Entry(args []string) error {
-	// Parse command line arguments for job configuration path
-	jobPath := ""
-	if len(args) > 0 {
-		for i, arg := range args {
-			if arg == "-job" && i+1 < len(args) {
-				jobPath = args[i+1]
-				break
-			}
-		}
-	}
-
-	if jobPath == "" {
-		return fmt.Errorf("job configuration file path is required, use -job <path>")
-	}
-
-	configuration, err := coreconfig.FromFile(jobPath)
-	if err != nil {
-		return fmt.Errorf("failed to parse configuration file: %v", err)
-	}
-
-	// Log configuration for debugging (sensitive data already filtered)
-	appLogger := logger.App()
-	if jsonStr, err := configuration.ToJSON(); err == nil {
-		appLogger.Debug("Job configuration loaded", zap.String("config", jsonStr))
-	}
-
-	return e.Start(configuration)
+	// Create and run job using new Job API
+	j := job.NewJob(allConf)
+	return j.Run(context.Background())
 }
 
 func Main(ver string) {
@@ -100,10 +60,19 @@ func Main(ver string) {
 
 	appLogger.Info("Starting DataX execution", zap.String("jobPath", jobPath))
 
-	engine := NewEngine()
-	args := []string{"-job", jobPath}
+	configuration, err := coreconfig.FromFile(jobPath)
+	if err != nil {
+		appLogger.Error("Failed to parse configuration file", zap.Error(err))
+		os.Exit(1)
+	}
 
-	if err := engine.Entry(args); err != nil {
+	// Log configuration for debugging (sensitive data already filtered)
+	if jsonStr, err := configuration.ToJSON(); err == nil {
+		appLogger.Debug("Job configuration loaded", zap.String("config", jsonStr))
+	}
+
+	engine := NewEngine()
+	if err := engine.Start(configuration); err != nil {
 		appLogger.Error("DataX execution failed", zap.Error(err))
 		os.Exit(1)
 	}

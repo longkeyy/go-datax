@@ -1,6 +1,7 @@
 package job
 
 import (
+	"context"
 	"fmt"
 	"sync"
 	"time"
@@ -29,6 +30,10 @@ type JobContainer struct {
 	endTimeStamp    int64
 	startTransferTimeStamp int64
 	endTransferTimeStamp   int64
+
+	// Context support for cancellation
+	ctx    context.Context
+	cancel context.CancelFunc
 }
 
 func NewJobContainer(configuration config.Configuration) *JobContainer {
@@ -47,7 +52,17 @@ func convertNewConfigToOldConfig(newConfig config.Configuration) config.Configur
 	return newConfig
 }
 
+// Start executes job synchronously without context support (for backward compatibility)
 func (jc *JobContainer) Start() error {
+	return jc.StartWithContext(context.Background())
+}
+
+// StartWithContext executes job with context support for cancellation
+func (jc *JobContainer) StartWithContext(ctx context.Context) error {
+	// Setup context with cancellation
+	jc.ctx, jc.cancel = context.WithCancel(ctx)
+	defer jc.cancel()
+
 	appLogger := logger.App()
 	appLogger.Info("DataX JobContainer starts job")
 
@@ -225,6 +240,16 @@ func (jc *JobContainer) schedule(readerTaskConfigs, writerTaskConfigs []config.C
 	errChan := make(chan error, taskCount)
 
 	for i := 0; i < taskCount; i++ {
+		// Check for context cancellation before starting new task group
+		select {
+		case <-jc.ctx.Done():
+			// Context cancelled, wait for already started tasks and return
+			wg.Wait()
+			close(errChan)
+			return jc.ctx.Err()
+		default:
+		}
+
 		wg.Add(1)
 		go func(index int) {
 			defer wg.Done()

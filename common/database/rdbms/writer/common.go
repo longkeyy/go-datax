@@ -76,22 +76,130 @@ func (job *CommonRdbmsWriterJob) Prepare() error {
 }
 
 // Split creates task configurations for parallel execution.
-// Marks configurations as preprocessed to avoid redundant schema resolution.
+// Design: channel parameter represents concurrency per table (not total tasks).
+//
+// Behavior:
+//   - Single table: channel=N → N tasks for that table
+//   - Multiple tables: channel=N → N tasks per table (total = tableCount × N)
+//
+// This is a Go enhancement over Java DataX for better usability:
+//   - Java version: enforces tableCount == taskCount (too restrictive)
+//   - Go version: channel always means "concurrency per table" (intuitive)
 func (job *CommonRdbmsWriterJob) Split(mandatoryNumber int) ([]config.Configuration, error) {
-	taskConfigs := make([]config.Configuration, mandatoryNumber)
+	compLogger := logger.Component().WithComponent("CommonRdbmsWriterJob")
 
-	for i := 0; i < mandatoryNumber; i++ {
-		taskConfig := job.config.Clone()
-		taskConfig.Set("taskId", i)
-		// Optimization: prevent redundant preprocessing in task instances
-		taskConfig.Set("_rdbmsPreprocessed", true)
-		taskConfigs[i] = taskConfig
+	// Get table count set during pretreatment phase
+	tableNumber := job.config.GetIntWithDefault("tableNumber", 1)
+
+	// mandatoryNumber represents tasks per table (channel setting)
+	tasksPerTable := mandatoryNumber
+
+	// Scenario 1: Single table - create N parallel tasks
+	if tableNumber == 1 {
+		compLogger.Info("Splitting for single table with parallel tasks",
+			zap.Int("tasksPerTable", tasksPerTable),
+			zap.Int("totalTasks", tasksPerTable),
+			zap.String("databaseType", job.dataBaseType.String()))
+
+		taskConfigs := make([]config.Configuration, tasksPerTable)
+		for i := 0; i < tasksPerTable; i++ {
+			taskConfig := job.config.Clone()
+			taskConfig.Set("taskId", i)
+			taskConfig.Set("_rdbmsPreprocessed", true)
+			taskConfigs[i] = taskConfig
+		}
+		return taskConfigs, nil
 	}
 
-	logger.Component().WithComponent("CommonRdbmsWriterJob").Info("Split writer tasks",
-		zap.Int("taskCount", mandatoryNumber),
+	// Scenario 2: Multiple tables - create N tasks per table
+	totalTasks := tableNumber * tasksPerTable
+
+	compLogger.Info("Splitting for multi-table scenario",
+		zap.Int("tableCount", tableNumber),
+		zap.Int("tasksPerTable", tasksPerTable),
+		zap.Int("totalTasks", totalTasks),
 		zap.String("databaseType", job.dataBaseType.String()))
+
+	// Extract connection configurations and iterate through tables
+	connections := job.config.GetListConfiguration("parameter.connection")
+	if len(connections) == 0 {
+		return nil, fmt.Errorf("no connection configuration found")
+	}
+
+	preSqls := job.config.GetStringList("parameter.preSql")
+	postSqls := job.config.GetStringList("parameter.postSql")
+
+	taskConfigs := make([]config.Configuration, 0, totalTasks)
+	taskId := 0
+
+	// Process each connection (typically just one)
+	for _, conn := range connections {
+		jdbcUrl := conn.GetString("jdbcUrl")
+		tables := conn.GetStringList("table")
+
+		// For each table, create tasksPerTable configurations
+		for _, table := range tables {
+			for i := 0; i < tasksPerTable; i++ {
+				taskConfig := job.config.Clone()
+				taskConfig.Set("taskId", taskId)
+				taskConfig.Set("_rdbmsPreprocessed", true)
+
+				// Override with single table configuration
+				taskConfig.Set("parameter.connection", []map[string]interface{}{
+					{
+						"jdbcUrl": jdbcUrl,
+						"table":   []string{table}, // Single table for this task
+					},
+				})
+
+				// Render preSql/postSql with table name replacement (matches Java's @table placeholder)
+				if len(preSqls) > 0 {
+					renderedPreSqls := renderSqlsWithTable(preSqls, table)
+					taskConfig.Set("parameter.preSql", renderedPreSqls)
+				}
+
+				if len(postSqls) > 0 {
+					renderedPostSqls := renderSqlsWithTable(postSqls, table)
+					taskConfig.Set("parameter.postSql", renderedPostSqls)
+				}
+
+				compLogger.Debug("Created task configuration",
+					zap.Int("taskId", taskId),
+					zap.String("table", table),
+					zap.Int("tableTaskIndex", i))
+
+				taskConfigs = append(taskConfigs, taskConfig)
+				taskId++
+			}
+		}
+	}
+
+	compLogger.Info("Split completed",
+		zap.Int("totalTasks", len(taskConfigs)),
+		zap.Int("tableCount", tableNumber),
+		zap.Int("tasksPerTable", tasksPerTable))
+
 	return taskConfigs, nil
+}
+
+// renderSqlsWithTable replaces @table placeholder in SQL statements with actual table name
+// This matches Java's WriterUtil.renderPreOrPostSqls() behavior
+func renderSqlsWithTable(sqls []string, tableName string) []string {
+	if len(sqls) == 0 {
+		return sqls
+	}
+
+	rendered := make([]string, 0, len(sqls))
+	for _, sql := range sqls {
+		// Skip empty SQL statements
+		if strings.TrimSpace(sql) == "" {
+			continue
+		}
+		// Replace @table placeholder (Java constant: Constant.TABLE_NAME_PLACEHOLDER)
+		rendered = append(rendered, strings.ReplaceAll(sql, "@table", tableName))
+	}
+
+	return rendered
 }
 
 // Post executes post-processing SQL statements for cleanup or finalization.
@@ -154,6 +262,7 @@ type CommonRdbmsWriterTask struct {
 	table        string
 	columns      []string
 	columnNumber int
+	primaryKeys  []string // Cached primary key column names (supports composite keys, may be empty)
 }
 
 // NewCommonRdbmsWriterTask creates a new task instance for data writing operations.
@@ -201,6 +310,30 @@ func (task *CommonRdbmsWriterTask) Init(config config.Configuration) error {
 		return fmt.Errorf("failed to connect to database: %v", err)
 	}
 	task.db = db
+
+	// Query and cache primary key columns for PostgreSQL and MySQL (for upsert support)
+	if task.dataBaseType == PostgreSQL || task.dataBaseType == MySQL {
+		pks, err := queryPrimaryKeyColumns(task.db, task.dataBaseType, task.table)
+		if err != nil {
+			logger.Component().WithComponent("CommonRdbmsWriterTask").Warn(
+				"Failed to query primary keys, will use standard INSERT mode",
+				zap.String("table", task.table),
+				zap.Error(err))
+			// Don't fail - just proceed without primary key info (standard INSERT mode)
+		} else {
+			task.primaryKeys = pks
+			if len(pks) == 0 {
+				logger.Component().WithComponent("CommonRdbmsWriterTask").Debug(
+					"Table has no primary key, will use standard INSERT mode",
+					zap.String("table", task.table))
+			} else {
+				logger.Component().WithComponent("CommonRdbmsWriterTask").Debug(
+					"Retrieved primary key columns",
+					zap.String("table", task.table),
+					zap.Strings("primaryKeys", pks))
+			}
+		}
+	}
 
 	logger.Component().WithComponent("CommonRdbmsWriterTask").Info("Task initialized",
 		zap.String("databaseType", task.dataBaseType.String()),
@@ -350,14 +483,30 @@ func (task *CommonRdbmsWriterTask) writeBatch(records []element.Record) error {
 	metricsLogger.LogDatabaseMetrics("BatchInsert", rowsAffected, duration)
 
 	compLogger := logger.Component().WithComponent("CommonRdbmsWriterTask")
-	if skippedCount > 0 {
-		compLogger.Info("Batch written with conflicts",
+
+	// Determine operation type based on database type and primary key availability
+	isUpsertMode := (task.dataBaseType == PostgreSQL || task.dataBaseType == MySQL) &&
+		len(task.primaryKeys) > 0 &&
+		len(filterNonPrimaryKeys(task.columns, task.primaryKeys)) > 0
+
+	if isUpsertMode {
+		// UPSERT mode: affected rows includes both inserts and updates
+		// Note: MySQL/PostgreSQL don't distinguish between insert and update in rowsAffected
+		compLogger.Info("Batch upserted",
+			zap.Int64("affected", rowsAffected), // Total rows inserted or updated
+			zap.Int64("attempted", totalAttempted),
+			zap.Strings("primaryKeys", task.primaryKeys),
+			zap.Duration("duration", duration))
+	} else if skippedCount > 0 {
+		// SKIP mode: some records were skipped due to conflicts (all-PK tables or IGNORE mode)
+		compLogger.Info("Batch written with skipped records",
 			zap.Int64("inserted", rowsAffected),
 			zap.Int64("skipped", skippedCount),
 			zap.Int64("attempted", totalAttempted),
 			zap.Duration("duration", duration))
 	} else {
-		compLogger.Debug("Batch written successfully",
+		// STANDARD INSERT mode: all records inserted successfully
+		compLogger.Debug("Batch inserted successfully",
 			zap.Int64("inserted", rowsAffected),
 			zap.Int64("total", totalAttempted),
 			zap.Duration("duration", duration))
@@ -405,21 +554,116 @@ func (task *CommonRdbmsWriterTask) buildBatchInsertSQL(records []element.Record)
 		valuePlaceholders[i] = fmt.Sprintf("(%s)", strings.Join(recordPlaceholders, ", "))
 	}
 
-	// Generate database-specific INSERT with conflict resolution
+	// Generate database-specific INSERT with upsert strategy
+	// Handles 4 scenarios: no PK, all-PK table, normal table with PK, other databases
 	var insertSQL string
 	switch task.dataBaseType {
 	case PostgreSQL:
-		insertSQL = fmt.Sprintf("INSERT INTO %s (%s) VALUES %s ON CONFLICT DO NOTHING",
-			task.table, columnStr, strings.Join(valuePlaceholders, ", "))
+		// Scenario 1: No primary key → standard INSERT (may create duplicates)
+		if len(task.primaryKeys) == 0 {
+			insertSQL = fmt.Sprintf("INSERT INTO %s (%s) VALUES %s",
+				task.table, columnStr, strings.Join(valuePlaceholders, ", "))
+			break
+		}
+
+		// Calculate non-primary-key columns for UPDATE clause
+		updateCols := filterNonPrimaryKeys(task.columns, task.primaryKeys)
+
+		// Scenario 2: All columns are primary keys → ON CONFLICT DO NOTHING (skip duplicates)
+		if len(updateCols) == 0 {
+			conflictCols := strings.Join(task.primaryKeys, ", ")
+			insertSQL = fmt.Sprintf("INSERT INTO %s (%s) VALUES %s ON CONFLICT (%s) DO NOTHING",
+				task.table, columnStr, strings.Join(valuePlaceholders, ", "), conflictCols)
+			break
+		}
+
+		// Scenario 3: Has non-PK columns → ON CONFLICT DO UPDATE (upsert)
+		conflictCols := strings.Join(task.primaryKeys, ", ")
+		updatePairs := buildPostgresUpdatePairs(updateCols)
+		insertSQL = fmt.Sprintf("INSERT INTO %s (%s) VALUES %s ON CONFLICT (%s) DO UPDATE SET %s",
+			task.table, columnStr, strings.Join(valuePlaceholders, ", "), conflictCols, updatePairs)
+
 	case MySQL:
-		insertSQL = fmt.Sprintf("INSERT IGNORE INTO %s (%s) VALUES %s",
-			task.table, columnStr, strings.Join(valuePlaceholders, ", "))
+		// Scenario 1: No primary key → standard INSERT (may create duplicates)
+		if len(task.primaryKeys) == 0 {
+			insertSQL = fmt.Sprintf("INSERT INTO %s (%s) VALUES %s",
+				task.table, columnStr, strings.Join(valuePlaceholders, ", "))
+			break
+		}
+
+		// Calculate non-primary-key columns for UPDATE clause
+		updateCols := filterNonPrimaryKeys(task.columns, task.primaryKeys)
+
+		// Scenario 2: All columns are primary keys → INSERT IGNORE (skip duplicates)
+		if len(updateCols) == 0 {
+			insertSQL = fmt.Sprintf("INSERT IGNORE INTO %s (%s) VALUES %s",
+				task.table, columnStr, strings.Join(valuePlaceholders, ", "))
+			break
+		}
+
+		// Scenario 3: Has non-PK columns → ON DUPLICATE KEY UPDATE (upsert)
+		updatePairs := buildMySQLUpdatePairs(updateCols)
+		insertSQL = fmt.Sprintf("INSERT INTO %s (%s) VALUES %s ON DUPLICATE KEY UPDATE %s",
+			task.table, columnStr, strings.Join(valuePlaceholders, ", "), updatePairs)
+
 	default:
+		// Scenario 4: Other databases → standard INSERT
 		insertSQL = fmt.Sprintf("INSERT INTO %s (%s) VALUES %s",
 			task.table, columnStr, strings.Join(valuePlaceholders, ", "))
 	}
 
 	return insertSQL, allValues, nil
+}
+
+// filterNonPrimaryKeys returns all columns that are not primary keys
+// Used to generate UPDATE clauses that only update non-PK columns
+// Example: allColumns=[id,name,age], primaryKeys=[id] → [name,age]
+// Edge case: allColumns=[id,code], primaryKeys=[id,code] → [] (empty array for all-PK tables)
+func filterNonPrimaryKeys(allColumns, primaryKeys []string) []string {
+	// Build primary key set for O(1) lookup
+	pkSet := make(map[string]bool, len(primaryKeys))
+	for _, pk := range primaryKeys {
+		pkSet[pk] = true
+	}
+
+	// Filter out primary key columns
+	nonPKs := make([]string, 0, len(allColumns))
+	for _, col := range allColumns {
+		if !pkSet[col] {
+			nonPKs = append(nonPKs, col)
+		}
+	}
+	return nonPKs
+}
+
+// buildPostgresUpdatePairs generates PostgreSQL UPDATE clause for ON CONFLICT
+// Syntax: col1=EXCLUDED.col1, col2=EXCLUDED.col2
+// Example: [name, age] → "name=EXCLUDED.name, age=EXCLUDED.age"
+func buildPostgresUpdatePairs(columns []string) string {
+	if len(columns) == 0 {
+		return ""
+	}
+
+	pairs := make([]string, len(columns))
+	for i, col := range columns {
+		pairs[i] = fmt.Sprintf("%s=EXCLUDED.%s", col, col)
+	}
+	return strings.Join(pairs, ", ")
+}
+
+// buildMySQLUpdatePairs generates MySQL UPDATE clause for ON DUPLICATE KEY UPDATE
+// Syntax: col1=VALUES(col1), col2=VALUES(col2)
+// Example: [name, age] → "name=VALUES(name), age=VALUES(age)"
+func buildMySQLUpdatePairs(columns []string) string {
+	if len(columns) == 0 {
+		return ""
+	}
+
+	pairs := make([]string, len(columns))
+	for i, col := range columns {
+		pairs[i] = fmt.Sprintf("%s=VALUES(%s)", col, col)
+	}
+	return strings.Join(pairs, ", ")
 }
 
 // convertColumnToValue transforms DataX column types to database-compatible values.
